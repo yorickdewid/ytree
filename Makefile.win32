@@ -1,0 +1,8 @@
+SRC=ytree.c
+BIN=ytree.exe
+CFLAGS=/W4 /Zi
+
+all: standalone
+
+standalone:
+	$(CC) $(CFLAGS)  /DSTANDALONE  $(SRC) /Fe:$(BIN)
