@@ -250,11 +250,11 @@ void print_leaves(node_t *root) {
 	while (true) {
 		for (i = 0; i < c->num_keys; ++i) {
 			if (verbose_output)
-				printf("%lx ", (unsigned long)c->pointers[i]);
+				printf("%lx ", (unsigned int)(uintptr_t)c->pointers[i]);
 			printf("%d ", c->keys[i]);
 		}
 		if (verbose_output)
-			printf("%lx ", (unsigned long)c->pointers[order - 1]);
+			printf("%lx ", (unsigned int)(uintptr_t)c->pointers[order - 1]);
 		if (c->pointers[order - 1] != NULL) {
 			printf(" | ");
 			c = c->pointers[order - 1];
@@ -326,10 +326,10 @@ void print_tree( node_t * root ) {
 			}
 		}
 		if (verbose_output) 
-			printf("(%lx)", (unsigned long)n);
+			printf("(%lx)", (unsigned int)(uintptr_t)n);
 		for (i = 0; i < n->num_keys; i++) {
 			if (verbose_output)
-				printf("%lx ", (unsigned long)n->pointers[i]);
+				printf("%lx ", (unsigned int)(uintptr_t)n->pointers[i]);
 			printf("%d ", n->keys[i]);
 		}
 		if (!n->is_leaf)
@@ -337,9 +337,9 @@ void print_tree( node_t * root ) {
 				enqueue(n->pointers[i]);
 		if (verbose_output) {
 			if (n->is_leaf) 
-				printf("%lx ", (unsigned long)n->pointers[order - 1]);
+				printf("%lx ", (unsigned int)(uintptr_t)n->pointers[order - 1]);
 			else
-				printf("%lx ", (unsigned long)n->pointers[n->num_keys]);
+				printf("%lx ", (unsigned int)(uintptr_t)n->pointers[n->num_keys]);
 		}
 		printf("| ");
 	}
@@ -356,7 +356,7 @@ void find_and_print(node_t * root, int key, bool verbose) {
 		printf("Record not found under key %d.\n", key);
 	else 
 		printf("Record at %lx -- key %d, value %d.\n",
-				(unsigned long)r, key, r->value);
+				(unsigned int)(uintptr_t)r, key, r->value);
 }
 
 
@@ -367,20 +367,23 @@ void find_and_print_range( node_t * root, int key_start, int key_end,
 		bool verbose ) {
 	int i;
 	int array_size = key_end - key_start + 1;
-	int returned_keys[array_size];
-	void * returned_pointers[array_size];
+	// int returned_keys[array_size];
+	int *returned_keys = (int *)malloc(array_size);
+	void **returned_pointers = malloc(array_size);//[array_size];
 	int num_found = find_range( root, key_start, key_end, verbose,
-			returned_keys, returned_pointers );
+			returned_keys, returned_pointers);
 	if (!num_found)
 		printf("None found.\n");
 	else {
 		for (i = 0; i < num_found; i++)
 			printf("Key: %d   Location: %lx  Value: %d\n",
 					returned_keys[i],
-					(unsigned long)returned_pointers[i],
+					(unsigned int)(uintptr_t)returned_pointers[i],
 					((record_t *)
 					 returned_pointers[i])->value);
 	}
+
+	free(returned_keys);
 }
 
 
@@ -390,7 +393,7 @@ void find_and_print_range( node_t * root, int key_start, int key_end,
  * entries found.
  */
 int find_range( node_t * root, int key_start, int key_end, bool verbose,
-		int returned_keys[], void * returned_pointers[]) {
+		int *returned_keys, void **returned_pointers) {
 	int i, num_found;
 	num_found = 0;
 	node_t * n = find_leaf( root, key_start, verbose );
@@ -895,7 +898,7 @@ int get_neighbor_index(node_t *n) {
 
 	// Error state.
 	printf("Search for nonexistent pointer to node in parent.\n");
-	printf("Node:  %#lx\n", (unsigned long)n);
+	printf("Node:  %#lx\n", (unsigned int)(uintptr_t)n);
 	exit(EXIT_FAILURE);
 }
 
