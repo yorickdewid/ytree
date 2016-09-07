@@ -36,7 +36,7 @@
  *  
  * Must be compiled with a C99-compliant C compiler such as the latest GCC.
  *
- * Usage:  bpt [order]
+ * Usage:  ytree [order]
  * where order is an optional argument
  * (integer MIN_ORDER <= order <= MAX_ORDER)
  * defined as the maximal number of pointers in any node.
@@ -295,11 +295,11 @@ void ytree_print_leaves(node_t *root) {
 	while (true) {
 		for (i = 0; i < c->num_keys; ++i) {
 			if (verbose_output)
-				printf("%lx ", (unsigned int)(uintptr_t)c->pointers[i]);
+				printf("%x ", (unsigned int)(uintptr_t)c->pointers[i]);
 			printf("%d ", c->keys[i]);
 		}
 		if (verbose_output)
-			printf("%lx ", (unsigned int)(uintptr_t)c->pointers[order - 1]);
+			printf("%x ", (unsigned int)(uintptr_t)c->pointers[order - 1]);
 		if (c->pointers[order - 1] != NULL) {
 			printf(" | ");
 			c = c->pointers[order - 1];
@@ -946,7 +946,7 @@ int get_neighbor_index(node_t *n) {
 
 	// Error state.
 	printf("Search for nonexistent pointer to node in parent.\n");
-	printf("Node:  %#lx\n", (unsigned int)(uintptr_t)n);
+	printf("Node:  %#x\n", (unsigned int)(uintptr_t)n);
 	exit(EXIT_FAILURE);
 }
 
