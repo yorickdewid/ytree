@@ -52,6 +52,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <assert.h>
 #include <stdint.h>
 
 /* Algorithm version */
@@ -61,7 +62,9 @@
 #define DEFAULT_ORDER 4
 
 /* Enable for debug compilation */
+#ifdef STANDALONE
 #define DEBUG 1
+#endif
 
 /* 
  * Minimum order is necessarily 3. We set the maximum
@@ -162,6 +165,7 @@ typedef struct node {
 } node_t;
 
 typedef struct {
+	uint16_t order;							// Tree order
 	uint8_t flags;							// Bitmap defining tree options
 	node_t *root;							// Pointer to tree root
 	void (*hook_data_release)(void *);		// Hook for record pointer release
@@ -206,16 +210,20 @@ void (*release_callback)(void *) = NULL;
 /* Helpers */
 static void enqueue(node_t * new_node);
 static node_t *dequeue();
-int ytree_height(node_t *root);
-int path_to_root(node_t *root, node_t *child);
+static int path_to_root(node_t *root, node_t *child);
+static node_t *find_leaf(node_t *root, int key, bool verbose);
 
 /* Output */
+#ifdef DEBUG
 void ytree_print_leaves(node_t *root);
+void ytree_print_value(record_t *record);
 void ytree_print_tree(node_t *root);
 void find_and_print(node_t *root, int key, bool verbose); 
 void find_and_print_range(node_t *root, int range1, int range2, bool verbose); 
-int find_range(node_t *root, int key_start, int key_end, bool verbose, int returned_keys[], void *returned_pointers[]); 
-static node_t *find_leaf(node_t *root, int key, bool verbose);
+#endif
+
+int ytree_height(node_t *root);
+int ytree_find_range(node_t *root, int key_start, int key_end, bool verbose, int returned_keys[], void *returned_pointers[]); 
 record_t *ytree_find(node_t *root, int key, bool verbose);
 
 /* Insertion */
@@ -293,6 +301,8 @@ static int cut(int length) {
  * OUTPUT
  * ********************************/
 
+#ifdef DEBUG
+
 /*
  * Prints the bottom row of keys
  * of the tree (with their respective
@@ -328,12 +338,12 @@ void ytree_print_leaves(node_t *root) {
 	printf("\n");
 }
 
-/* TODO: debug only
+/*
  * Find the datatype in the record
  * and print the corresponding
  * value to screen
  */
-void print_value(record_t *record) {
+void ytree_print_value(record_t *record) {
 	switch (record->value_type) {
 		case DT_CHAR:
 			printf("%c\n", record->value._char);
@@ -350,42 +360,8 @@ void print_value(record_t *record) {
 	}
 }
 
-/*
- * Utility function to give the height
- * of the tree, which length in number of edges
- * of the path from the root to any leaf.
- */
-int ytree_height(node_t *root) {
-	int h = 0;
-
-	if (!root) {
-		return 0;
-	}
-
-	node_t *c = root;
-	while (!c->is_leaf) {
-		c = c->pointers[0];
-		h++;
-	}
-
-	return h;
-}
 
 /*
- * Utility function to give the length in edges
- * of the path from any node to the root.
- */
-int path_to_root(node_t *root, node_t *child) {
-	int length = 0;
-	node_t *c = child;
-	while (c != root) {
-		c = c->parent;
-		length++;
-	}
-	return length;
-}
-
-/* TODO: debug only
  * Prints the B+ tree in the command
  * line in level (rank) order, with the 
  * keys in each node and the '|' symbol
@@ -437,11 +413,11 @@ void ytree_print_tree(node_t *root) {
 	printf("\n");
 }
 
-/* TODO: debug only
+/*
  * Finds the record under a given key and prints an
  * appropriate message to stdout.
  */
-void find_and_print(node_t * root, int key, bool verbose) {
+void find_and_print(node_t *root, int key, bool verbose) {
 	record_t *record = ytree_find(root, key, verbose);
 	if (!record) {
 		printf("Key: %d  Record: NULL\n", key);
@@ -449,23 +425,23 @@ void find_and_print(node_t * root, int key, bool verbose) {
 	}
 
 	printf("Key: %d  Record: ", key);
-	print_value(record);
+	ytree_print_value(record);
 }
 
-/* TODO: debug only
+/*
  * Finds and prints the keys, pointers, and values within a range
  * of keys between key_start and key_end, including both bounds.
  */
-void find_and_print_range(node_t * root, int key_start, int key_end, bool verbose) {
+void find_and_print_range(node_t *root, int key_start, int key_end, bool verbose) {
 	int i;
 	int array_size = key_end - key_start + 1;
 	int *returned_keys = (int *)malloc(array_size);
 	void **returned_pointers = malloc(array_size);
-	int num_found = find_range( root, key_start, key_end, verbose, returned_keys, returned_pointers);
+	int num_found = ytree_find_range(root, key_start, key_end, verbose, returned_keys, returned_pointers);
 	if (num_found) {
 		for (i = 0; i < num_found; i++) {
 			printf("Key: %d  Record: ", returned_keys[i]);
-			print_value((record_t *)returned_pointers[i]);
+			ytree_print_value((record_t *)returned_pointers[i]);
 		}
 	} else {
 		printf("None found\n");
@@ -474,19 +450,59 @@ void find_and_print_range(node_t * root, int key_start, int key_end, bool verbos
 	free(returned_keys);
 }
 
+#endif
+
+/*
+ * Utility function to give the height
+ * of the tree, which length in number of edges
+ * of the path from the root to any leaf.
+ */
+int ytree_height(node_t *root) {
+	int h = 0;
+
+	if (!root) {
+		return 0;
+	}
+
+	node_t *c = root;
+	while (!c->is_leaf) {
+		c = c->pointers[0];
+		h++;
+	}
+
+	return h;
+}
+
+/*
+ * Utility function to give the length in edges
+ * of the path from any node to the root.
+ */
+static int path_to_root(node_t *root, node_t *child) {
+	int length = 0;
+	node_t *c = child;
+	while (c != root) {
+		c = c->parent;
+		length++;
+	}
+	return length;
+}
+
 /*
  * Finds keys and their pointers, if present, in the range specified
  * by key_start and key_end, inclusive. Places these in the arrays
  * returned_keys and returned_pointers, and returns the number of
  * entries found.
  */
-int find_range(node_t *root, int key_start, int key_end, bool verbose, int *returned_keys, void **returned_pointers) {
+int ytree_find_range(node_t *root, int key_start, int key_end, bool verbose, int *returned_keys, void **returned_pointers) {
 	int i, num_found = 0;
 	node_t *n = find_leaf(root, key_start, verbose);
 	if (!n)
 		return 0;
 
-	for (i = 0; i < n->num_keys && n->keys[i] < key_start; i++);
+	assert(returned_keys);
+	assert(returned_pointers);
+
+	for (i = 0; i < n->num_keys && n->keys[i] < key_start; ++i);
 	if (i == n->num_keys)
 		return 0;
 
