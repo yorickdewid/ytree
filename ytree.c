@@ -54,12 +54,20 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <stdint.h>
+#include <string.h>
+
+#include <sys/stat.h>
 
 /* Algorithm version */
 #define VERSION "1.1"
 
 /* Default order is 4 */
 #define DEFAULT_ORDER 4
+
+/* Default page size */
+#define DEFAULT_PAGE_SIZE 1024
+
+#define DBHEADER "YTREE01"
 
 /* Enable for debug compilation */
 #ifdef STANDALONE
@@ -165,9 +173,11 @@ typedef struct node {
 } node_t;
 
 typedef struct {
+	uint32_t root;							// Pointer to tree root
 	uint16_t order;							// Tree order
+	uint16_t page_size;						// Page size
 	uint8_t flags;							// Bitmap defining tree options
-	node_t *root;							// Pointer to tree root
+	FILE *pdb;								// Database file pointer
 	void (*hook_data_release)(void *);		// Hook for record pointer release
 } tree_t;
 
@@ -248,7 +258,7 @@ static node_t *delete_entry(node_t *root, node_t *n, int key, void *pointer);
 node_t *ytree_delete(node_t *root, int key);
 
 /* Tree operations */
-void ytree_init(tree_t *tree, uint8_t flags);
+void ytree_init(const char *dbname, tree_t **tree, uint8_t flags);
 void ytree_destroy(node_t *root);
 
 /* ********************************
@@ -295,6 +305,11 @@ static int cut(int length) {
 		return length/2;
 	else
 		return length/2 + 1;
+}
+
+static bool file_exist(const char *filename) {
+    struct stat st;
+    return stat(filename, &st) == 0;
 }
 
 /* ********************************
@@ -781,8 +796,7 @@ static node_t *insert_into_leaf_after_splitting(node_t *root, node_t *leaf, int 
  * into a node into which these can fit
  * without violating the B+ tree properties.
  */
-static node_t *insert_into_node(node_t *root, node_t *n, 
-		int left_index, int key, node_t *right) {
+static node_t *insert_into_node(node_t *root, node_t *n, int left_index, int key, node_t *right) {
 	int i;
 	for (i = n->num_keys; i > left_index; i--) {
 		n->pointers[i + 1] = n->pointers[i];
@@ -1359,14 +1373,59 @@ static void destroy_tree_nodes(node_t *root) {
  * ********************************/
 
 /* 
- * Create new tree
+ * Write header to disk
  */
-void ytree_init(tree_t *tree, uint8_t flags) {
-	if (!tree)
-		return;
+static void db_write_header(tree_t *tree) {
+	char buffer[8];
+	strncpy(buffer, DBHEADER, 8);
 
-	tree->flags = flags;
-	tree->root = NULL;
+	fwrite(buffer, sizeof(char), sizeof(buffer), tree->pdb);
+	fwrite(tree, sizeof(tree_t), 1, tree->pdb);
+	fflush(tree->pdb);
+}
+
+static void db_alloc_page(tree_t *tree, unsigned short n) {
+	fseek(tree->pdb, (n *tree->page_size) - 1, SEEK_SET);
+	fwrite(tree, 1, 1, tree->pdb);
+}
+
+/* 
+ * Create new database
+ */
+void ytree_init(const char *dbname, tree_t **tree, uint8_t flags) {
+	*tree = (tree_t *)calloc(1, sizeof(tree_t));
+
+	if (file_exist(dbname)) {
+		puts("open");
+
+		// db_read_header(tree);
+	} else {
+		(*tree)->pdb = fopen(dbname, "w+b");
+		if (!(*tree)->pdb) {
+			perror("ytree_init");
+			exit(1);
+		}
+
+		/* Default settings */
+		(*tree)->root = 0;
+		(*tree)->order = DEFAULT_ORDER;
+		(*tree)->page_size = DEFAULT_PAGE_SIZE;
+		(*tree)->flags = flags;
+
+		db_write_header(*tree);
+		db_alloc_page(*tree, 1);
+	}
+
+	(*tree)->flags = flags;
+	// tree->root = NULL;
+}
+
+/* 
+ * Close the database
+ */
+void ytree_close(tree_t **tree) {
+	fclose((*tree)->pdb);
+	free(*tree);
 }
 
 /* 
@@ -1475,13 +1534,13 @@ void require_input(int *input) {
 int main(int argc, char *argv[]) {
 	int input, range2;
 	char instruction;
-	tree_t tree;
+	tree_t *db;
 
 	node_t *root = NULL;
 	verbose_output = false;
 
 	/* Create new tree object */
-	ytree_init(&tree, TREE_FLAG_VERBOSE);
+	ytree_init("test.ydb", &db, TREE_FLAG_VERBOSE);
 
 	if (argc > 1) {
 		order = atoi(argv[1]);
@@ -1572,6 +1631,8 @@ int main(int argc, char *argv[]) {
 	printf("\n");
 
 interactive_done:
+	ytree_close(&db);
+
 	return EXIT_SUCCESS;
 }
 
