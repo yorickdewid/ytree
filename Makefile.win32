@@ -1,6 +1,6 @@
 SRC=ytree.c
 BIN=ytree.exe
-CFLAGS=/W4 /Zi
+CFLAGS=/W4 /Zi /DWIN32
 
 all: standalone
 
