@@ -67,7 +67,8 @@
 /* Default page size */
 #define DEFAULT_PAGE_SIZE 1024
 
-#define DBHEADER "YTREE01"
+/* Database header */
+#define DBHEADER "YTREE11"
 
 /* Enable for debug compilation */
 #ifdef STANDALONE
@@ -85,11 +86,17 @@
  * Tree options. These can be set when
  * a new tree is created.
  */
-#define TREE_FLAG_DUPLICATE	0x10	// Allow duplicated keys
-#define TREE_FLAG_HASH		0x02	// Use hash buckets where possible
-#define TREE_FLAG_VERBOSE	0x04	// Verbose output
-#define TREE_FLAG_RO		0x08	// Read only tree
-#define TREE_FLAG_COW		0x10	// Copy-on-write
+#define DB_FLAG_DUPLICATE	0x01	// Allow duplicated keys
+#define DB_FLAG_HASH		0x02	// Use hash buckets where possible
+#define DB_FLAG_VERBOSE		0x04	// Verbose output
+#define DB_FLAG_RO			0x08	// Read only tree
+#define DB_FLAG_COW			0x10	// Copy-on-write
+
+/* 
+ * Database index algorithm.
+ */
+#define INDEX_TREE		0x01	// B+Tree index
+#define INDEX_HASH		0x01	// Hash index
 
 /* ********************************
  * TYPES
@@ -164,22 +171,49 @@ typedef struct {
  * leaf.
  */
 typedef struct node {
-	void **pointers;		// Array of pointers to records
-	int *keys;				// Array of keys with size: order 
-	struct node *parent;	// Parent node or NULL for root
-	bool is_leaf;			// Internal node or leaf
-	int num_keys;			// Number of keys in node
-	struct node *next;		// Used for queue
+	void **pointers;						// Array of pointers to records
+	int *keys;								// Array of keys with size: order 
+	struct node *parent;					// Parent node or NULL for root
+	bool is_leaf;							// Internal node or leaf
+	int num_keys;							// Number of keys in node
+	struct node *next;						// Used for queue
 } node_t;
 
+/*
+ * Database schema.
+ * Storage only.
+ */
+struct schema {
+	uint16_t id;							// Database id
+	uint8_t type;							// Type of index
+	uint32_t root;							// Offset to database
+};
+
+/* Database environment */
 typedef struct {
-	uint32_t root;							// Pointer to tree root
-	uint16_t order;							// Tree order
+	int schema;								// Offset to database schema
+	int free_front;							// Offset to free block from front
+	int free_back;							// Offset to free block from back
+	short order;							// Tree order
+	size_t page_size;						// Page size
+	char flags;								// Bitmap defining tree options
+	FILE *pdb;								// Database file pointer
+	struct {
+		void (*data_release)(void *);		// Called on record release
+	} hooks;
+} env_t;
+
+/*
+ * Database environment.
+ * Storage only.
+ */
+struct env {
+	char header[8];							// Database header
+	uint32_t schema;						// Pointer to the database schema
+	uint16_t order;							// Tree order (B+Tree only)
 	uint16_t page_size;						// Page size
 	uint8_t flags;							// Bitmap defining tree options
-	FILE *pdb;								// Database file pointer
-	void (*hook_data_release)(void *);		// Hook for record pointer release
-} tree_t;
+};
 
 /* ********************************
  * GLOBALS
@@ -235,6 +269,7 @@ void find_and_print_range(node_t *root, int range1, int range2, bool verbose);
 int ytree_height(node_t *root);
 int ytree_find_range(node_t *root, int key_start, int key_end, bool verbose, int returned_keys[], void *returned_pointers[]); 
 record_t *ytree_find(node_t *root, int key, bool verbose);
+void ytree_destroy(node_t *root);
 
 /* Insertion */
 record_t *make_record(enum datatype type, char c_value, int i_value, float f_value, void *p_value, size_t vsize);
@@ -258,8 +293,8 @@ static node_t *delete_entry(node_t *root, node_t *n, int key, void *pointer);
 node_t *ytree_delete(node_t *root, int key);
 
 /* Tree operations */
-void ytree_init(const char *dbname, tree_t **tree, uint8_t flags);
-void ytree_destroy(node_t *root);
+void ytree_env_init(const char *dbname, env_t **tree, uint8_t flags);
+void ytree_env_close(env_t **tree);
 
 /* ********************************
  * HELPERS
@@ -1368,66 +1403,6 @@ static void destroy_tree_nodes(node_t *root) {
 	free(root);
 }
 
-/* ********************************
- * TREE OPERATIONS
- * ********************************/
-
-/* 
- * Write header to disk
- */
-static void db_write_header(tree_t *tree) {
-	char buffer[8];
-	strncpy(buffer, DBHEADER, 8);
-
-	fwrite(buffer, sizeof(char), sizeof(buffer), tree->pdb);
-	fwrite(tree, sizeof(tree_t), 1, tree->pdb);
-	fflush(tree->pdb);
-}
-
-static void db_alloc_page(tree_t *tree, unsigned short n) {
-	fseek(tree->pdb, (n *tree->page_size) - 1, SEEK_SET);
-	fwrite(tree, 1, 1, tree->pdb);
-}
-
-/* 
- * Create new database
- */
-void ytree_init(const char *dbname, tree_t **tree, uint8_t flags) {
-	*tree = (tree_t *)calloc(1, sizeof(tree_t));
-
-	if (file_exist(dbname)) {
-		puts("open");
-
-		// db_read_header(tree);
-	} else {
-		(*tree)->pdb = fopen(dbname, "w+b");
-		if (!(*tree)->pdb) {
-			perror("ytree_init");
-			exit(1);
-		}
-
-		/* Default settings */
-		(*tree)->root = 0;
-		(*tree)->order = DEFAULT_ORDER;
-		(*tree)->page_size = DEFAULT_PAGE_SIZE;
-		(*tree)->flags = flags;
-
-		db_write_header(*tree);
-		db_alloc_page(*tree, 1);
-	}
-
-	(*tree)->flags = flags;
-	// tree->root = NULL;
-}
-
-/* 
- * Close the database
- */
-void ytree_close(tree_t **tree) {
-	fclose((*tree)->pdb);
-	free(*tree);
-}
-
 /* 
  * Delete tree object
  */
@@ -1436,6 +1411,95 @@ void ytree_destroy(node_t *root) {
 		return;
 
 	destroy_tree_nodes(root);
+}
+
+/* ********************************
+ * DATABASE OPERATIONS
+ * ********************************/
+
+/* Return schema size depending on page size */
+#define get_schema_size(n) (n)->page_size/64
+
+/* 
+ * Write header to disk
+ */
+static void env_write_header(env_t *env) {
+	struct env buffer;
+	strncpy(buffer.header, DBHEADER, 8);
+
+	buffer.schema = env->schema;
+	buffer.order = env->order;
+	buffer.page_size = env->page_size;
+	buffer.flags = env->flags;
+
+	fwrite(&buffer, sizeof(struct env), 1, env->pdb);
+	fflush(env->pdb);
+}
+
+/* 
+ * Write schema to offset
+ */
+static void env_write_schema(env_t *env, uint32_t offset) {
+	struct schema *schema = calloc(get_schema_size(env), sizeof(struct schema));
+
+	fseek(env->pdb, offset, SEEK_SET);
+	fwrite(schema, sizeof(struct schema), get_schema_size(env), env->pdb);
+
+	free(schema);
+}
+
+static void env_alloc_page(env_t *env, unsigned short n) {
+	fseek(env->pdb, (n * env->page_size) - 1, SEEK_SET);
+	fwrite(env, 1, 1, env->pdb);
+
+	env->free_back = ftell(env->pdb);
+}
+
+/* 
+ * Create new database environment
+ */
+void ytree_env_init(const char *dbname, env_t **env, uint8_t flags) {
+	*env = (env_t *)calloc(1, sizeof(env_t));
+
+	if (file_exist(dbname)) {
+		puts("open");
+
+		// env_read_header(*env);
+		// env_read_schema(*env);
+	} else {
+		(*env)->pdb = fopen(dbname, "w+b");
+		if (!(*env)->pdb) {
+			perror("ytree_env_init");
+			exit(1);
+		}
+
+		/* Default settings */
+		(*env)->schema = sizeof(env_t);
+		(*env)->order = DEFAULT_ORDER;
+		(*env)->page_size = DEFAULT_PAGE_SIZE;
+		(*env)->flags = flags;
+
+		env_write_header(*env);
+		env_write_schema(*env, (*env)->schema);
+
+		(*env)->free_front = ftell((*env)->pdb);
+
+		env_alloc_page(*env, 1);
+	}
+}
+
+void ytree_db_init(short index, env_t **env) {
+	assert(index < get_schema_size(*env));
+
+	//
+}
+
+/* 
+ * Close the database environment
+ */
+void ytree_env_close(env_t **env) {
+	fclose((*env)->pdb);
+	free(*env);
 }
 
 /* ********************************
@@ -1534,13 +1598,15 @@ void require_input(int *input) {
 int main(int argc, char *argv[]) {
 	int input, range2;
 	char instruction;
-	tree_t *db;
+	env_t *env;
+	// db_t *db;
 
 	node_t *root = NULL;
 	verbose_output = false;
 
 	/* Create new tree object */
-	ytree_init("test.ydb", &db, TREE_FLAG_VERBOSE);
+	ytree_env_init("test.ydb", &env, DB_FLAG_VERBOSE);
+	// ytree_db_init(0, &db, &env);
 
 	if (argc > 1) {
 		order = atoi(argv[1]);
@@ -1631,7 +1697,7 @@ int main(int argc, char *argv[]) {
 	printf("\n");
 
 interactive_done:
-	ytree_close(&db);
+	ytree_env_close(&env);
 
 	return EXIT_SUCCESS;
 }
