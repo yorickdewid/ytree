@@ -51,15 +51,13 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdbool.h>
 #include <assert.h>
-#include <stdint.h>
 #include <string.h>
-
 #include <sys/stat.h>
+#include "ytree.h"
 
 /* Algorithm version */
-#define VERSION "1.1"
+#define VERSION "0.1"
 
 /* Default order is 4 */
 #define DEFAULT_ORDER 4
@@ -68,12 +66,7 @@
 #define DEFAULT_PAGE_SIZE 1024
 
 /* Database header */
-#define DBHEADER "YTREE11"
-
-/* Enable for debug compilation */
-#ifdef STANDALONE
-#define DEBUG 1
-#endif
+#define DBHEADER "YTREE01"
 
 /* 
  * Minimum order is necessarily 3. We set the maximum
@@ -81,16 +74,6 @@
  */
 #define MIN_ORDER 3
 #define MAX_ORDER 100
-
-/* 
- * Tree options. These can be set when
- * a new tree is created.
- */
-#define DB_FLAG_DUPLICATE	0x01	// Allow duplicated keys
-#define DB_FLAG_HASH		0x02	// Use hash buckets where possible
-#define DB_FLAG_VERBOSE		0x04	// Verbose output
-#define DB_FLAG_RO			0x08	// Read only tree
-#define DB_FLAG_COW			0x10	// Copy-on-write
 
 /* 
  * Database index algorithm.
@@ -103,35 +86,6 @@
  * ********************************/
 
 /*
- * Datatypes are used to
- * identify record values.
- */
-enum datatype {
-	DT_CHAR,
-	DT_INT,
-	DT_FLOAT,
-	DT_DATA,
-};
-
-/*
- * Type representing the record
- * to which a given key refers.
- * The record can hold native types
- * or user defined structures. These
- * structures must be serializable.
- */
-typedef struct {
-	union {
-		char _char;
-		int _int;
-		float _float;
-		void *_data;
-	} value;
-	enum datatype value_type;
-	size_t value_size;
-} record_t;
-
-/*
  * Datatype helpers to determine the
  * type of data stored in the record
  */
@@ -139,45 +93,6 @@ typedef struct {
 #define is_int(r) (r->value_type == DT_INT)
 #define is_float(r) (r->value_type == DT_FLOAT)
 #define is_data(r) (r->value_type == DT_DATA)
-
-/*
- * Type representing a node in the B+ tree.
- * This type is general enough to serve for both
- * the leaf and the internal node.
- * The heart of the node is the array
- * of keys and the array of corresponding
- * pointers holding the values. The relation between
- * keys and pointers differs between leaves and
- * internal nodes. In a leaf, the index
- * of each key equals the index of its corresponding
- * pointer, with a maximum of order - 1 key-pointer
- * pairs. The last pointer points to the
- * sequencial leaf to the right (or NULL in the
- * case of the rightmost leaf).
- * In an internal node, the first pointer
- * refers to lower nodes with keys less than
- * the smallest key in the keys array. Then,
- * with indices i starting at 0, the pointer
- * at i + 1 points to the subtree with keys
- * greater than or equal to the key in this
- * node at index i.
- * The num_keys field is used to keep
- * track of the number of valid keys.
- * In an internal node, the number of valid
- * pointers is always num_keys + 1.
- * In a leaf, the number of valid pointers
- * to data is always num_keys.  The
- * last leaf pointer points to the next sequential 
- * leaf.
- */
-typedef struct node {
-	void **pointers;						// Array of pointers to records
-	int *keys;								// Array of keys with size: order 
-	struct node *parent;					// Parent node or NULL for root
-	bool is_leaf;							// Internal node or leaf
-	int num_keys;							// Number of keys in node
-	struct node *next;						// Used for queue
-} node_t;
 
 /*
  * Database schema.
@@ -190,16 +105,6 @@ struct schema {
 	uint16_t order;							// Tree order (B+Tree only)
 };
 
-/* Database environment */
-typedef struct {
-	int schema;								// Offset to database schema
-	int free_front;							// Offset to free block from front
-	int free_back;							// Offset to free block from back
-	size_t page_size;						// Page size
-	char flags;								// Bitmap defining tree options
-	FILE *pdb;								// Database file pointer
-} env_t;
-
 /*
  * Database environment.
  * Storage only.
@@ -211,33 +116,9 @@ struct env {
 	uint8_t flags;							// Bitmap defining tree options
 };
 
-/* Single database */
-typedef struct {
-	int schema_id;							// Id in schema
-	short order;							// Tree order (B+Tree only)
-	int _root;								// Offset to root
-	env_t *env;								// Pointer to current environment
-	node_t *root;							// Pointer to root node
-	struct {
-		void (*data_release)(void *);		// Called on record release
-	} hooks;
-} db_t;
-
 /* ********************************
  * GLOBALS
  * ********************************/
-
-/* The order determines the maximum and minimum
- * number of entries (keys and pointers) in any
- * node.  Every node has at most order - 1 keys and
- * at least (roughly speaking) half that number.
- * Every leaf has as many pointers to data as keys,
- * and every internal node has one more pointer
- * to a subtree than the number of keys.
- * This global variable is initialized to the
- * default value.
- */
-// int order = DEFAULT_ORDER;
 
 /* The user can toggle on and off the "verbose"
  * property, which causes the pointer addresses
@@ -256,29 +137,11 @@ void (*release_callback)(void *) = NULL;
 static int path_to_root(node_t *root, node_t *child);
 static node_t *find_leaf(node_t *root, int key);
 
-/* Output */
-#ifdef DEBUG
-void ytree_print_leaves(db_t **db);
-void ytree_print_value(record_t *record);
-void ytree_print_tree(db_t **db);
-
-//TODO ytree?
-void find_and_print(db_t **db, int key, bool verbose); 
-void find_and_print_range(db_t **db, int range1, int range2, bool verbose); 
-#endif
-
-/* Miscellaneous */
-int ytree_height(db_t **db);
-int ytree_count(db_t **db);
-void ytree_destroy(db_t **db);
-void ytree_order(db_t **db, unsigned int order);
-const char *ytree_version();
-
+/* Search */
 static int find_range(db_t **db, int key_start, int key_end, int *returned_keys, void *returned_pointers[]); 
 static record_t *find(node_t *root, int key);
 
 /* Insertion */
-record_t *make_record(enum datatype type, char c_value, int i_value, float f_value, void *p_value, size_t vsize);
 static node_t *make_node_raw(db_t **db, bool is_leaf);
 static int get_left_index(node_t *parent, node_t *left);
 static node_t *insert_into_leaf(node_t *leaf, int key, record_t *pointer );
@@ -288,18 +151,12 @@ static node_t *insert_into_node_after_splitting(db_t **db, node_t * parent, int 
 static node_t *insert_into_parent(db_t **db, node_t * left, int key, node_t * right);
 static node_t *insert_into_new_root(db_t **db, node_t * left, int key, node_t * right);
 static node_t *start_new_tree(db_t **db, int key, record_t * pointer);
-void ytree_insert(db_t **db, int key, record_t *pointer);
 
 /* Deletion */
 static node_t *adjust_root(db_t **db);
 static node_t *coalesce_nodes(db_t **db, node_t *n, node_t *neighbor, int neighbor_index, int k_prime);
 static node_t *redistribute_nodes(db_t **db, node_t *n, node_t *neighbor, int neighbor_index, int k_prime_index, int k_prime);
 static node_t *delete_entry(db_t **db, node_t *n, int key, void *pointer);
-void ytree_delete(db_t **db, int key);
-
-/* Tree operations */
-void ytree_env_init(const char *dbname, env_t **tree, uint8_t flags);
-void ytree_env_close(env_t **tree);
 
 /* ********************************
  * HELPERS
@@ -323,7 +180,7 @@ static bool file_exist(const char *filename) {
 }
 
 /* ********************************
- * OUTPUT
+ * OUTPUT [DEBUG ONLY]
  * ********************************/
 
 #ifdef DEBUG
@@ -506,7 +363,7 @@ void find_and_print_range(db_t **db, int key_start, int key_end, bool verbose) {
 	free(returned_keys);
 }
 
-#endif
+#endif // DEBUG
 
 /*
  * Utility function to give the height
@@ -563,6 +420,15 @@ const char *ytree_version() {
  * Set B+Tree order, this is only valid for
  * a B+Tree structure, and is otherwise ignored.
  * Order can only be set if the tree is empty.
+ * The order determines the maximum and minimum
+ * number of entries (keys and pointers) in any
+ * node.  Every node has at most order - 1 keys and
+ * at least (roughly speaking) half that number.
+ * Every leaf has as many pointers to data as keys,
+ * and every internal node has one more pointer
+ * to a subtree than the number of keys.
+ * This global variable is initialized to the
+ * default value.
  */
 void ytree_order(db_t **db, unsigned int order) {
 	if (!(*db)->root) {
@@ -715,14 +581,13 @@ record_t *make_record(enum datatype type, char c_value, int i_value, float f_val
 	return new_record;
 }
 
-/* 
- * Helper macros for easy record
- * creation.
+/*
+ * Create a new record using valuepair. This 
+ * is compatible with other databases.
  */
-#define ytree_new_char(c) make_record(DT_CHAR, c, 0, 0, NULL, 0)
-#define ytree_new_int(i) make_record(DT_INT, 0, i, 0, NULL, 0)
-#define ytree_new_float(f) make_record(DT_FLOAT, 0, 0, f, NULL, 0)
-#define ytree_new_data(d,n) make_record(DT_FLOAT, 0, 0, 0, d, n)
+record_t *ytree_new_record(valuepair_t *pair) {
+	return make_record(DT_DATA, 0, 0, 0, pair->data, pair->size);
+}
 
 /*
  * Creates a new general node, which can be adapted
@@ -1566,6 +1431,7 @@ void print_status(db_t **db) {
 	printf("  Verbose output %s\n", verbose_output ? "on" : "off");
 	printf("  Tree height %d\n", ytree_height(db));
 	printf("  Tree empty %s\n", (*db)->root == NULL ? "yes" : "no");
+	printf("  Count %d\n", ytree_count(db));
 	puts("");
 }
 
