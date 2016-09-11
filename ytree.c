@@ -239,13 +239,6 @@ typedef struct {
  */
 // int order = DEFAULT_ORDER;
 
-/* The queue is used to print the tree in
- * level order, starting from the root
- * printing each entire rank on a separate
- * line, finishing with the leaves.
- */
-node_t *queue = NULL;
-
 /* The user can toggle on and off the "verbose"
  * property, which causes the pointer addresses
  * to be printed out in hexadecimal notation
@@ -260,8 +253,6 @@ void (*release_callback)(void *) = NULL;
  * ********************************/
 
 /* Helpers */
-static void enqueue(node_t * new_node);
-static node_t *dequeue();
 static int path_to_root(node_t *root, node_t *child);
 static node_t *find_leaf(node_t *root, int key);
 
@@ -313,36 +304,6 @@ void ytree_env_close(env_t **tree);
 /* ********************************
  * HELPERS
  * ********************************/
-
-/*
- * Helper function for printing the
- * tree. See print_tree.
- */
-static void enqueue(node_t *new_node) {
-	node_t *c;
-	if (queue == NULL) {
-		queue = new_node;
-		queue->next = NULL;
-	} else {
-		c = queue;
-		while (c->next != NULL) {
-			c = c->next;
-		}
-		c->next = new_node;
-		new_node->next = NULL;
-	}
-}
-
-/*
- * Helper function for printing the
- * tree. See print_tree.
- */
-static node_t *dequeue() {
-	node_t *n = queue;
-	queue = queue->next;
-	n->next = NULL;
-	return n;
-}
 
 /* TODO: make define
  * Finds the appropriate place to
@@ -424,8 +385,39 @@ void ytree_print_value(record_t *record) {
 	}
 }
 
+/* The queue is used to print the tree in
+ * level order, starting from the root
+ * printing each entire rank on a separate
+ * line, finishing with the leaves.
+ */
+static void enqueue(node_t **queue, node_t *new_node) {
+	node_t *c;
+	if (!*queue) {
+		*queue = new_node;
+		(*queue)->next = NULL;
+	} else {
+		c = *queue;
+		while (c->next != NULL) {
+			c = c->next;
+		}
+		c->next = new_node;
+		new_node->next = NULL;
+	}
+}
+
 /*
- * Prints the B+ tree in the command
+ * Helper function for printing the
+ * tree. See print_tree.
+ */
+static node_t *dequeue(node_t **queue) {
+	node_t *n = *queue;
+	*queue = (*queue)->next;
+	n->next = NULL;
+	return n;
+}
+
+/*
+ * Prints the B+Tree in the command
  * line in level (rank) order, with the 
  * keys in each node and the '|' symbol
  * to separate nodes.
@@ -444,10 +436,10 @@ void ytree_print_tree(db_t **db) {
 		return;
 	}
 
-	queue = NULL;
-	enqueue((*db)->root);
+	node_t *queue = NULL;
+	enqueue(&queue, (*db)->root);
 	while (queue) {
-		node_t *n = dequeue();
+		node_t *n = dequeue(&queue);
 		if (n->parent != NULL && n == n->parent->pointers[0]) {
 			new_rank = path_to_root((*db)->root, n);
 			if (new_rank != rank) {
@@ -465,7 +457,7 @@ void ytree_print_tree(db_t **db) {
 
 		if (!n->is_leaf)
 			for (i = 0; i <= n->num_keys; i++)
-				enqueue(n->pointers[i]);
+				enqueue(&queue, n->pointers[i]);
 		// if (verbose_output) {
 		// 	if (n->is_leaf) 
 		// 		printf("%x ", (unsigned int)(uintptr_t)n->pointers[4 - 1]);
@@ -697,7 +689,7 @@ static record_t *find(node_t *root, int key) {
  * to which a key refers.
  */
 record_t *make_record(enum datatype type, char c_value, int i_value, float f_value, void *p_value, size_t vsize) {
-	record_t *new_record = (record_t *)malloc(sizeof(record_t));
+	record_t *new_record = (record_t *)calloc(1, sizeof(record_t));
 	if (!new_record) {
 		perror("Record creation");
 		exit(EXIT_FAILURE);
@@ -737,19 +729,19 @@ record_t *make_record(enum datatype type, char c_value, int i_value, float f_val
  * to serve as either a leaf or an internal node.
  */
 static node_t *make_node_raw(db_t **db, bool is_leaf) {
-	node_t *new_node = (node_t *)malloc(sizeof(node_t));
+	node_t *new_node = (node_t *)calloc(1, sizeof(node_t));
 	if (!new_node) {
 		perror("Node creation.");
 		exit(EXIT_FAILURE);
 	}
 
-	new_node->keys = malloc(((*db)->order - 1) * sizeof(int));
+	new_node->keys = calloc(((*db)->order - 1), sizeof(int));
 	if (!new_node->keys) {
 		perror("New node keys array.");
 		exit(EXIT_FAILURE);
 	}
 
-	new_node->pointers = malloc((*db)->order * sizeof(void *));
+	new_node->pointers = calloc((*db)->order, sizeof(void *));
 	if (new_node->pointers == NULL) {
 		perror("New node pointers array.");
 		exit(EXIT_FAILURE);
@@ -814,13 +806,13 @@ static node_t *insert_into_leaf(node_t *leaf, int key, record_t *pointer) {
 static node_t *insert_into_leaf_after_splitting(db_t **db, node_t *leaf, int key, record_t *pointer) {
 	node_t *new_leaf = make_leaf(db);
 
-	int *temp_keys = (int *)malloc((*db)->order * sizeof(int));
+	int *temp_keys = (int *)calloc((*db)->order, sizeof(int));
 	if (!temp_keys) {
 		perror("Temporary keys array.");
 		exit(EXIT_FAILURE);
 	}
 
-	void **temp_pointers = malloc((*db)->order * sizeof(void *));
+	void **temp_pointers = calloc((*db)->order, sizeof(void *));
 	if (!temp_pointers) {
 		perror("Temporary pointers array.");
 		exit(EXIT_FAILURE);
@@ -910,13 +902,13 @@ static node_t *insert_into_node_after_splitting(db_t **db, node_t *old_node, int
 	 * keys and pointers to the old node and
 	 * the other half to the new.
 	 */
-	node_t **temp_pointers = malloc(((*db)->order + 1) * sizeof(node_t *));
+	node_t **temp_pointers = calloc(((*db)->order + 1), sizeof(node_t *));
 	if (!temp_pointers) {
 		perror("Temporary pointers array for splitting nodes.");
 		exit(EXIT_FAILURE);
 	}
 
-	int *temp_keys = malloc((*db)->order * sizeof(int));
+	int *temp_keys = calloc((*db)->order, sizeof(int));
 	if (!temp_keys) {
 		perror("Temporary keys array for splitting nodes.");
 		exit(EXIT_FAILURE);
