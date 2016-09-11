@@ -139,7 +139,6 @@ static node_t *find_leaf(node_t *root, int key);
 
 /* Search */
 static int find_range(db_t **db, int key_start, int key_end, int *returned_keys, void *returned_pointers[]); 
-static record_t *find(node_t *root, int key);
 
 /* Insertion */
 static node_t *make_node_raw(db_t **db, bool is_leaf);
@@ -331,7 +330,7 @@ void ytree_print_tree(db_t **db) {
  * appropriate message to stdout.
  */
 void find_and_print(db_t **db, int key, bool verbose) {
-	record_t *record = find((*db)->root, key);
+	record_t *record = ytree_find(db, key);
 	if (!record) {
 		printf("Key: %d  Record: NULL\n", key);
 		return;
@@ -530,9 +529,9 @@ static node_t *find_leaf(node_t *root, int key) {
  * Finds and returns the record to which
  * a key refers.
  */
-static record_t *find(node_t *root, int key) {
+record_t *ytree_find(db_t **db, int key) {
 	int i = 0;
-	node_t *c = find_leaf(root, key);
+	node_t *c = find_leaf((*db)->root, key);
 	if (!c)
 		return NULL;
 
@@ -910,7 +909,7 @@ void ytree_insert(db_t **db, int key, record_t *pointer) {
 	 * The current implementation ignores
 	 * duplicates.
 	 */
-	if (find((*db)->root, key) != NULL) {
+	if (ytree_find(db, key) != NULL) {
 		return;
 	}
 
@@ -1267,7 +1266,7 @@ node_t *delete_entry(db_t **db, node_t *n, int key, void *pointer) {
  * Master deletion function
  */
 void ytree_delete(db_t **db, int key) {
-	record_t *key_record = find((*db)->root, key);
+	record_t *key_record = ytree_find(db, key);
 	node_t *key_leaf = find_leaf((*db)->root, key);
 	if (key_record && key_leaf) {
 		(*db)->root = delete_entry(db, key_leaf, key, key_record);
@@ -1300,7 +1299,7 @@ static void destroy_tree_nodes(node_t *root) {
 /* 
  * Delete tree object
  */
-void ytree_destroy(db_t **db) {
+void ytree_purge(db_t **db) {
 	if (!(*db)->root)
 		return;
 
@@ -1430,7 +1429,7 @@ void print_status(db_t **db) {
 	printf("  Record type INT\n");
 	printf("  Verbose output %s\n", verbose_output ? "on" : "off");
 	printf("  Tree height %d\n", ytree_height(db));
-	printf("  Tree empty %s\n", (*db)->root == NULL ? "yes" : "no");
+	printf("  Tree empty %s\n",  ytree_db_empty(db) ? "yes" : "no");
 	printf("  Count %d\n", ytree_count(db));
 	puts("");
 }
@@ -1592,7 +1591,7 @@ int main(int argc, char *argv[]) {
 			print_status(&db);
 			break;
 		case 'x': /* Destroy tree */
-			ytree_destroy(&db);
+			ytree_purge(&db);
 			break;
 		default: /* Help */
 			print_console_help();

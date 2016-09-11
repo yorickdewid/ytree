@@ -170,11 +170,12 @@ void find_and_print_range(db_t **db, int range1, int range2, bool verbose);
 /* Miscellaneous */
 int ytree_height(db_t **db);
 int ytree_count(db_t **db);
-void ytree_destroy(db_t **db);
+void ytree_purge(db_t **db);
 void ytree_order(db_t **db, unsigned int order);
 const char *ytree_version();
 
 void ytree_insert(db_t **db, int key, record_t *pointer);
+record_t *ytree_find(db_t **db, int key);
 void ytree_delete(db_t **db, int key);
 
 /* Tree operations */
@@ -192,5 +193,7 @@ record_t *ytree_new_record(valuepair_t *pair);
 #define ytree_new_int(i) make_record(DT_INT, 0, i, 0, NULL, 0)
 #define ytree_new_float(f) make_record(DT_FLOAT, 0, 0, f, NULL, 0)
 #define ytree_new_data(d,n) make_record(DT_DATA, 0, 0, 0, d, n)
+
+#define ytree_db_empty(d) ((*d)->root == NULL)
 
 #endif // _YTREE_H_
