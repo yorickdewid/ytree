@@ -187,6 +187,7 @@ struct schema {
 	uint16_t id;							// Database id
 	uint8_t type;							// Type of index
 	uint32_t root;							// Offset to database
+	uint16_t order;							// Tree order (B+Tree only)
 };
 
 /* Database environment */
@@ -194,7 +195,6 @@ typedef struct {
 	int schema;								// Offset to database schema
 	int free_front;							// Offset to free block from front
 	int free_back;							// Offset to free block from back
-	short order;							// Tree order
 	size_t page_size;						// Page size
 	char flags;								// Bitmap defining tree options
 	FILE *pdb;								// Database file pointer
@@ -207,7 +207,6 @@ typedef struct {
 struct env {
 	char header[8];							// Database header
 	uint32_t schema;						// Pointer to the database schema
-	uint16_t order;							// Tree order (B+Tree only)
 	uint16_t page_size;						// Page size
 	uint8_t flags;							// Bitmap defining tree options
 };
@@ -215,6 +214,7 @@ struct env {
 /* Single database */
 typedef struct {
 	int schema_id;							// Id in schema
+	short order;							// Tree order (B+Tree only)
 	int _root;								// Offset to root
 	env_t *env;								// Pointer to current environment
 	node_t *root;							// Pointer to root node
@@ -237,7 +237,7 @@ typedef struct {
  * This global variable is initialized to the
  * default value.
  */
-int order = DEFAULT_ORDER;
+// int order = DEFAULT_ORDER;
 
 /* The queue is used to print the tree in
  * level order, starting from the root
@@ -276,33 +276,34 @@ void find_and_print(db_t **db, int key, bool verbose);
 void find_and_print_range(db_t **db, int range1, int range2, bool verbose); 
 #endif
 
-/* General shit? */
+/* Miscellaneous */
 int ytree_height(db_t **db);
+int ytree_count(db_t **db);
 void ytree_destroy(db_t **db);
+void ytree_order(db_t **db, unsigned int order);
 const char *ytree_version();
 
-static int find_range(node_t *root, int key_start, int key_end, bool verbose, int returned_keys[], void *returned_pointers[]); 
+static int find_range(db_t **db, int key_start, int key_end, int *returned_keys, void *returned_pointers[]); 
 static record_t *find(node_t *root, int key);
 
 /* Insertion */
 record_t *make_record(enum datatype type, char c_value, int i_value, float f_value, void *p_value, size_t vsize);
-static node_t *make_node();
-static node_t *make_leaf();
+static node_t *make_node_raw(db_t **db, bool is_leaf);
 static int get_left_index(node_t *parent, node_t *left);
 static node_t *insert_into_leaf(node_t *leaf, int key, record_t *pointer );
-static node_t *insert_into_leaf_after_splitting(node_t *root, node_t *leaf, int key, record_t *pointer);
-static node_t *insert_into_node(node_t *root, node_t *parent, int left_index, int key, node_t * right);
-static node_t *insert_into_node_after_splitting(node_t * root, node_t * parent, int left_index, int key, node_t * right);
-static node_t *insert_into_parent(node_t * root, node_t * left, int key, node_t * right);
-static node_t *insert_into_new_root(node_t * left, int key, node_t * right);
-static node_t *start_new_tree(int key, record_t * pointer);
+static node_t *insert_into_leaf_after_splitting(db_t **db, node_t *leaf, int key, record_t *pointer);
+static node_t *insert_into_node(db_t **db, node_t *parent, int left_index, int key, node_t * right);
+static node_t *insert_into_node_after_splitting(db_t **db, node_t * parent, int left_index, int key, node_t * right);
+static node_t *insert_into_parent(db_t **db, node_t * left, int key, node_t * right);
+static node_t *insert_into_new_root(db_t **db, node_t * left, int key, node_t * right);
+static node_t *start_new_tree(db_t **db, int key, record_t * pointer);
 void ytree_insert(db_t **db, int key, record_t *pointer);
 
 /* Deletion */
-static node_t *adjust_root(node_t *root);
-static node_t *coalesce_nodes(node_t *root, node_t *n, node_t *neighbor, int neighbor_index, int k_prime);
-static node_t *redistribute_nodes(node_t *root, node_t *n, node_t *neighbor, int neighbor_index, int k_prime_index, int k_prime);
-static node_t *delete_entry(node_t *root, node_t *n, int key, void *pointer);
+static node_t *adjust_root(db_t **db);
+static node_t *coalesce_nodes(db_t **db, node_t *n, node_t *neighbor, int neighbor_index, int k_prime);
+static node_t *redistribute_nodes(db_t **db, node_t *n, node_t *neighbor, int neighbor_index, int k_prime_index, int k_prime);
+static node_t *delete_entry(db_t **db, node_t *n, int key, void *pointer);
 void ytree_delete(db_t **db, int key);
 
 /* Tree operations */
@@ -360,10 +361,6 @@ static bool file_exist(const char *filename) {
     return stat(filename, &st) == 0;
 }
 
-const char *ytree_version() {
-	return VERSION;
-}
-
 /* ********************************
  * OUTPUT
  * ********************************/
@@ -394,10 +391,10 @@ void ytree_print_leaves(db_t **db) {
 			printf("%d ", c->keys[i]);
 		}
 		if (verbose_output)
-			printf("%x ", (unsigned int)(uintptr_t)c->pointers[order - 1]);
-		if (c->pointers[order - 1] != NULL) {
+			printf("%x ", (unsigned int)(uintptr_t)c->pointers[(*db)->order - 1]);
+		if (c->pointers[(*db)->order - 1] != NULL) {
 			printf(" | ");
-			c = c->pointers[order - 1];
+			c = c->pointers[(*db)->order - 1];
 		} else
 			break;
 	}
@@ -426,7 +423,6 @@ void ytree_print_value(record_t *record) {
 			break;
 	}
 }
-
 
 /*
  * Prints the B+ tree in the command
@@ -459,28 +455,29 @@ void ytree_print_tree(db_t **db) {
 				printf("\n");
 			}
 		}
-		if (verbose_output) 
-			printf("(%x)", (unsigned int)(uintptr_t)n);
+		// if (verbose_output) 
+		// 	printf("(%x)", (unsigned int)(uintptr_t)n);
 		for (i = 0; i < n->num_keys; i++) {
-			if (verbose_output)
-				printf("%x ", (unsigned int)(uintptr_t)n->pointers[i]);
+			// if (verbose_output)
+			// 	printf("%x ", (unsigned int)(uintptr_t)n->pointers[i]);
 			printf("%d ", n->keys[i]);
 		}
+
 		if (!n->is_leaf)
 			for (i = 0; i <= n->num_keys; i++)
 				enqueue(n->pointers[i]);
-		if (verbose_output) {
-			if (n->is_leaf) 
-				printf("%x ", (unsigned int)(uintptr_t)n->pointers[order - 1]);
-			else
-				printf("%x ", (unsigned int)(uintptr_t)n->pointers[n->num_keys]);
-		}
+		// if (verbose_output) {
+		// 	if (n->is_leaf) 
+		// 		printf("%x ", (unsigned int)(uintptr_t)n->pointers[4 - 1]);
+		// 	else
+		// 		printf("%x ", (unsigned int)(uintptr_t)n->pointers[n->num_keys]);
+		// }
 		printf("| ");
 	}
 	printf("\n");
 }
 
-/*
+/* public?
  * Finds the record under a given key and prints an
  * appropriate message to stdout.
  */
@@ -495,7 +492,7 @@ void find_and_print(db_t **db, int key, bool verbose) {
 	ytree_print_value(record);
 }
 
-/*
+/* public?
  * Finds and prints the keys, pointers, and values within a range
  * of keys between key_start and key_end, including both bounds.
  */
@@ -504,7 +501,7 @@ void find_and_print_range(db_t **db, int key_start, int key_end, bool verbose) {
 	int array_size = key_end - key_start + 1;
 	int *returned_keys = (int *)malloc(array_size);
 	void **returned_pointers = malloc(array_size);
-	int num_found = find_range((*db)->root, key_start, key_end, verbose, returned_keys, returned_pointers);
+	int num_found = find_range(db, key_start, key_end, returned_keys, returned_pointers);
 	if (num_found) {
 		for (i = 0; i < num_found; i++) {
 			printf("Key: %d  Record: ", returned_keys[i]);
@@ -540,6 +537,47 @@ int ytree_height(db_t **db) {
 	return h;
 }
 
+/* Return number of keys */
+int ytree_count(db_t **db) {
+	int count = 0;
+	node_t *c = (*db)->root;
+	if (!(*db)->root)
+		return count;
+
+	/* Find leftmost leave */
+	while (!c->is_leaf)
+		c = c->pointers[0];
+
+	while (true) {
+		count += c->num_keys;
+		if (c->pointers[(*db)->order - 1] != NULL)
+			c = c->pointers[(*db)->order - 1];
+		else
+			break;
+	}
+
+	return count;
+}
+
+/*
+ * Database version number
+ * returned as string.
+ */
+const char *ytree_version() {
+	return VERSION;
+}
+
+/* TODO: check index type == btree
+ * Set B+Tree order, this is only valid for
+ * a B+Tree structure, and is otherwise ignored.
+ * Order can only be set if the tree is empty.
+ */
+void ytree_order(db_t **db, unsigned int order) {
+	if (!(*db)->root) {
+		(*db)->order = order;
+	}
+}
+
 /*
  * Utility function to give the length in edges
  * of the path from any node to the root.
@@ -560,9 +598,9 @@ static int path_to_root(node_t *root, node_t *child) {
  * returned_keys and returned_pointers, and returns the number of
  * entries found.
  */
-static int find_range(node_t *root, int key_start, int key_end, bool verbose, int *returned_keys, void **returned_pointers) {
+static int find_range(db_t **db, int key_start, int key_end, int *returned_keys, void **returned_pointers) {
 	int i, num_found = 0;
-	node_t *n = find_leaf(root, key_start);
+	node_t *n = find_leaf((*db)->root, key_start);
 	if (!n)
 		return 0;
 
@@ -579,7 +617,7 @@ static int find_range(node_t *root, int key_start, int key_end, bool verbose, in
 			returned_pointers[num_found] = n->pointers[i];
 			num_found++;
 		}
-		n = n->pointers[order - 1];
+		n = n->pointers[(*db)->order - 1];
 		i = 0;
 	}
 
@@ -698,26 +736,26 @@ record_t *make_record(enum datatype type, char c_value, int i_value, float f_val
  * Creates a new general node, which can be adapted
  * to serve as either a leaf or an internal node.
  */
-static node_t *make_node() {
+static node_t *make_node_raw(db_t **db, bool is_leaf) {
 	node_t *new_node = (node_t *)malloc(sizeof(node_t));
 	if (!new_node) {
 		perror("Node creation.");
 		exit(EXIT_FAILURE);
 	}
 
-	new_node->keys = malloc((order - 1) * sizeof(int));
+	new_node->keys = malloc(((*db)->order - 1) * sizeof(int));
 	if (!new_node->keys) {
 		perror("New node keys array.");
 		exit(EXIT_FAILURE);
 	}
 
-	new_node->pointers = malloc(order * sizeof(void *));
+	new_node->pointers = malloc((*db)->order * sizeof(void *));
 	if (new_node->pointers == NULL) {
 		perror("New node pointers array.");
 		exit(EXIT_FAILURE);
 	}
 
-	new_node->is_leaf = false;
+	new_node->is_leaf = is_leaf;
 	new_node->num_keys = 0;
 	new_node->parent = NULL;
 	new_node->next = NULL;
@@ -728,11 +766,8 @@ static node_t *make_node() {
  * Creates a new leaf by creating a node
  * and then adapting it appropriately.
  */
-static node_t *make_leaf() {
-	node_t *leaf = make_node();
-	leaf->is_leaf = true;
-	return leaf;
-}
+#define make_leaf(d) make_node_raw(d,true)
+#define make_node(d) make_node_raw(d,false)
 
 /* Helper function used in insert_into_parent
  * to find the index of the parent's pointer to 
@@ -776,23 +811,23 @@ static node_t *insert_into_leaf(node_t *leaf, int key, record_t *pointer) {
  * the tree's order, causing the leaf to be split
  * in half.
  */
-static node_t *insert_into_leaf_after_splitting(node_t *root, node_t *leaf, int key, record_t *pointer) {
-	node_t *new_leaf = make_leaf();
+static node_t *insert_into_leaf_after_splitting(db_t **db, node_t *leaf, int key, record_t *pointer) {
+	node_t *new_leaf = make_leaf(db);
 
-	int *temp_keys = (int *)malloc(order * sizeof(int));
+	int *temp_keys = (int *)malloc((*db)->order * sizeof(int));
 	if (!temp_keys) {
 		perror("Temporary keys array.");
 		exit(EXIT_FAILURE);
 	}
 
-	void **temp_pointers = malloc(order * sizeof(void *));
+	void **temp_pointers = malloc((*db)->order * sizeof(void *));
 	if (!temp_pointers) {
 		perror("Temporary pointers array.");
 		exit(EXIT_FAILURE);
 	}
 
 	int insertion_index = 0;
-	while (insertion_index < order - 1 && leaf->keys[insertion_index] < key)
+	while (insertion_index < (*db)->order - 1 && leaf->keys[insertion_index] < key)
 		insertion_index++;
 
 	int i, j;
@@ -808,7 +843,7 @@ static node_t *insert_into_leaf_after_splitting(node_t *root, node_t *leaf, int 
 
 	leaf->num_keys = 0;
 
-	int split = cut(order - 1);
+	int split = cut((*db)->order - 1);
 
 	for (i = 0; i < split; i++) {
 		leaf->pointers[i] = temp_pointers[i];
@@ -816,7 +851,7 @@ static node_t *insert_into_leaf_after_splitting(node_t *root, node_t *leaf, int 
 		leaf->num_keys++;
 	}
 
-	for (i = split, j = 0; i < order; i++, j++) {
+	for (i = split, j = 0; i < (*db)->order; i++, j++) {
 		new_leaf->pointers[j] = temp_pointers[i];
 		new_leaf->keys[j] = temp_keys[i];
 		new_leaf->num_keys++;
@@ -826,25 +861,25 @@ static node_t *insert_into_leaf_after_splitting(node_t *root, node_t *leaf, int 
 	free(temp_keys);
 
 	/* Cheate the sequence chain */
-	new_leaf->pointers[order - 1] = leaf->pointers[order - 1];
-	leaf->pointers[order - 1] = new_leaf;
+	new_leaf->pointers[(*db)->order - 1] = leaf->pointers[(*db)->order - 1];
+	leaf->pointers[(*db)->order - 1] = new_leaf;
 
-	for (i = leaf->num_keys; i < order - 1; i++)
+	for (i = leaf->num_keys; i < (*db)->order - 1; i++)
 		leaf->pointers[i] = NULL;
-	for (i = new_leaf->num_keys; i < order - 1; i++)
+	for (i = new_leaf->num_keys; i < (*db)->order - 1; i++)
 		new_leaf->pointers[i] = NULL;
 
 	new_leaf->parent = leaf->parent;
 
-	return insert_into_parent(root, leaf, new_leaf->keys[0], new_leaf);
+	return insert_into_parent(db, leaf, new_leaf->keys[0], new_leaf);
 }
 
 /*
  * Inserts a new key and pointer to a node
  * into a node into which these can fit
- * without violating the B+ tree properties.
+ * without violating the B+Tree properties.
  */
-static node_t *insert_into_node(node_t *root, node_t *n, int left_index, int key, node_t *right) {
+static node_t *insert_into_node(db_t **db, node_t *n, int left_index, int key, node_t *right) {
 	int i;
 	for (i = n->num_keys; i > left_index; i--) {
 		n->pointers[i + 1] = n->pointers[i];
@@ -854,7 +889,7 @@ static node_t *insert_into_node(node_t *root, node_t *n, int left_index, int key
 	n->pointers[left_index + 1] = right;
 	n->keys[left_index] = key;
 	n->num_keys++;
-	return root;
+	return (*db)->root;
 }
 
 
@@ -863,7 +898,7 @@ static node_t *insert_into_node(node_t *root, node_t *n, int left_index, int key
  * into a node, causing the node's size to exceed
  * the order, and causing the node to split into two.
  */
-static node_t *insert_into_node_after_splitting(node_t *root, node_t *old_node, int left_index, int key, node_t *right) {
+static node_t *insert_into_node_after_splitting(db_t **db, node_t *old_node, int left_index, int key, node_t *right) {
 	node_t *child;
 
 	/*
@@ -875,13 +910,13 @@ static node_t *insert_into_node_after_splitting(node_t *root, node_t *old_node, 
 	 * keys and pointers to the old node and
 	 * the other half to the new.
 	 */
-	node_t **temp_pointers = malloc((order + 1) * sizeof(node_t *));
+	node_t **temp_pointers = malloc(((*db)->order + 1) * sizeof(node_t *));
 	if (!temp_pointers) {
 		perror("Temporary pointers array for splitting nodes.");
 		exit(EXIT_FAILURE);
 	}
 
-	int *temp_keys = malloc(order * sizeof(int));
+	int *temp_keys = malloc((*db)->order * sizeof(int));
 	if (!temp_keys) {
 		perror("Temporary keys array for splitting nodes.");
 		exit(EXIT_FAILURE);
@@ -906,8 +941,8 @@ static node_t *insert_into_node_after_splitting(node_t *root, node_t *old_node, 
 	 * half the keys and pointers to the
 	 * old and half to the new.
 	 */  
-	int split = cut(order);
-	node_t *new_node = make_node();
+	int split = cut((*db)->order);
+	node_t *new_node = make_node(db);
 	old_node->num_keys = 0;
 	for (i = 0; i < split - 1; i++) {
 		old_node->pointers[i] = temp_pointers[i];
@@ -916,7 +951,7 @@ static node_t *insert_into_node_after_splitting(node_t *root, node_t *old_node, 
 	}
 	old_node->pointers[i] = temp_pointers[i];
 	int k_prime = temp_keys[split - 1];
-	for (++i, j = 0; i < order; i++, j++) {
+	for (++i, j = 0; i < (*db)->order; i++, j++) {
 		new_node->pointers[j] = temp_pointers[i];
 		new_node->keys[j] = temp_keys[i];
 		new_node->num_keys++;
@@ -935,19 +970,19 @@ static node_t *insert_into_node_after_splitting(node_t *root, node_t *old_node, 
 	 * nodes resulting from the split, with
 	 * the old node to the left and the new to the right.
 	 */
-	return insert_into_parent(root, old_node, k_prime, new_node);
+	return insert_into_parent(db, old_node, k_prime, new_node);
 }
 
 /* 
- * Inserts a new node (leaf or internal node) into the B+ tree.
+ * Inserts a new node (leaf or internal node) into the B+Tree.
  * Returns the root of the tree after insertion.
  */
-static node_t *insert_into_parent(node_t *root, node_t *left, int key, node_t *right) {
+static node_t *insert_into_parent(db_t **db, node_t *left, int key, node_t *right) {
 	node_t *parent = left->parent;
 
 	/* Case: new root. */
 	if (!parent)
-		return insert_into_new_root(left, key, right);
+		return insert_into_new_root(db, left, key, right);
 
 	/*
 	 * Case: leaf or node.
@@ -963,14 +998,14 @@ static node_t *insert_into_parent(node_t *root, node_t *left, int key, node_t *r
 	/*
 	 * Simple case: the new key fits into the node. 
 	 */
-	if (parent->num_keys < order - 1)
-		return insert_into_node(root, parent, left_index, key, right);
+	if (parent->num_keys < (*db)->order - 1)
+		return insert_into_node(db, parent, left_index, key, right);
 
 	/* 
 	 * Harder case: split a node in order 
 	 * to preserve the B+ tree properties.
 	 */
-	return insert_into_node_after_splitting(root, parent, left_index, key, right);
+	return insert_into_node_after_splitting(db, parent, left_index, key, right);
 }
 
 /* 
@@ -978,8 +1013,8 @@ static node_t *insert_into_parent(node_t *root, node_t *left, int key, node_t *r
  * and inserts the appropriate key into
  * the new root.
  */
-static node_t *insert_into_new_root(node_t *left, int key, node_t *right) {
-	node_t * root = make_node();
+static node_t *insert_into_new_root(db_t **db, node_t *left, int key, node_t *right) {
+	node_t *root = make_node(db);
 	root->keys[0] = key;
 	root->pointers[0] = left;
 	root->pointers[1] = right;
@@ -994,11 +1029,11 @@ static node_t *insert_into_new_root(node_t *left, int key, node_t *right) {
  * First insertion:
  * start a new tree.
  */
-static node_t *start_new_tree(int key, record_t *pointer) {
-	node_t *root = make_leaf();
+static node_t *start_new_tree(db_t **db, int key, record_t *pointer) {
+	node_t *root = make_leaf(db);
 	root->keys[0] = key;
 	root->pointers[0] = pointer;
-	root->pointers[order - 1] = NULL;
+	root->pointers[(*db)->order - 1] = NULL;
 	root->parent = NULL;
 	root->num_keys++;
 	return root;
@@ -1027,7 +1062,7 @@ void ytree_insert(db_t **db, int key, record_t *pointer) {
 	 * Start a new tree.
 	 */
 	if (!(*db)->root) {
-		(*db)->root = start_new_tree(key, pointer);
+		(*db)->root = start_new_tree(db, key, pointer);
 		return;
 	}
 
@@ -1040,7 +1075,7 @@ void ytree_insert(db_t **db, int key, record_t *pointer) {
 	/* 
 	 *Case: leaf has room for key and pointer.
 	 */
-	if (leaf->num_keys < order - 1) {
+	if (leaf->num_keys < (*db)->order - 1) {
 		leaf = insert_into_leaf(leaf, key, pointer);
 		return;
 	}
@@ -1048,7 +1083,7 @@ void ytree_insert(db_t **db, int key, record_t *pointer) {
 	/*
 	 * Case: leaf must be split.
 	 */
-	(*db)->root = insert_into_leaf_after_splitting((*db)->root, leaf, key, pointer);
+	(*db)->root = insert_into_leaf_after_splitting(db, leaf, key, pointer);
 }
 
 /* ********************************
@@ -1081,10 +1116,10 @@ static int get_neighbor_index(node_t *n) {
 	exit(EXIT_FAILURE);
 }
 
-static node_t *remove_entry_from_node(node_t *n, int key, node_t *pointer) {
+static node_t *remove_entry_from_node(db_t **db, node_t *n, int key, node_t *pointer) {
 	int i, num_pointers;
 
-	// Remove the key and shift other keys accordingly.
+	/* Remove the key and shift other keys accordingly. */
 	i = 0;
 	while (n->keys[i] != key)
 		i++;
@@ -1100,53 +1135,48 @@ static node_t *remove_entry_from_node(node_t *n, int key, node_t *pointer) {
 	for (++i; i < num_pointers; i++)
 		n->pointers[i - 1] = n->pointers[i];
 
-
-	// One key fewer.
+	/* One key fewer. */
 	n->num_keys--;
 
 	// Set the other pointers to NULL for tidiness.
 	// A leaf uses the last pointer to point to the next leaf.
 	if (n->is_leaf)
-		for (i = n->num_keys; i < order - 1; i++)
+		for (i = n->num_keys; i < (*db)->order - 1; i++)
 			n->pointers[i] = NULL;
 	else
-		for (i = n->num_keys + 1; i < order; i++)
+		for (i = n->num_keys + 1; i < (*db)->order; i++)
 			n->pointers[i] = NULL;
 
 	return n;
 }
 
-static node_t *adjust_root(node_t *root) {
-	node_t *new_root;
+static node_t *adjust_root(db_t **db) {
+	node_t *new_root = NULL;
 
 	/* Case: nonempty root.
 	 * Key and pointer have already been deleted,
 	 * so nothing to be done.
 	 */
-	if (root->num_keys > 0)
-		return root;
+	if ((*db)->root->num_keys > 0)
+		return (*db)->root;
 
 	/* Case: empty root. 
 	 */
 
-	// If it has a child, promote 
-	// the first (only) child
-	// as the new root.
-
-	if (!root->is_leaf) {
-		new_root = root->pointers[0];
+	/*
+	 * If it has a child, promote 
+	 * the first (only) child
+	 * as the new root. If node is leaf
+	 * root becomes empty.
+	 */
+	if (!(*db)->root->is_leaf) {
+		new_root = (*db)->root->pointers[0];
 		new_root->parent = NULL;
 	}
 
-	// If it is a leaf (has no children),
-	// then the whole tree is empty.
-
-	else
-		new_root = NULL;
-
-	free(root->keys);
-	free(root->pointers);
-	free(root);
+	free((*db)->root->keys);
+	free((*db)->root->pointers);
+	free((*db)->root);
 
 	return new_root;
 }
@@ -1157,14 +1187,13 @@ static node_t *adjust_root(node_t *root) {
  * can accept the additional entries
  * without exceeding the maximum.
  */
-static node_t *coalesce_nodes(node_t * root, node_t * n, node_t * neighbor, int neighbor_index, int k_prime) {
+static node_t *coalesce_nodes(db_t **db, node_t *n, node_t *neighbor, int neighbor_index, int k_prime) {
 	int i, j, neighbor_insertion_index, n_end;
 	node_t * tmp;
 
 	/* Swap neighbor with node if node is on the
 	 * extreme left and neighbor is to its right.
 	 */
-
 	if (neighbor_index == -1) {
 		tmp = n;
 		n = neighbor;
@@ -1176,7 +1205,6 @@ static node_t *coalesce_nodes(node_t * root, node_t * n, node_t * neighbor, int 
 	 * Recall that n and neighbor have swapped places
 	 * in the special case of n being a leftmost child.
 	 */
-
 	neighbor_insertion_index = neighbor->num_keys;
 
 	/* Case:  nonleaf node.
@@ -1229,14 +1257,14 @@ static node_t *coalesce_nodes(node_t * root, node_t * n, node_t * neighbor, int 
 			neighbor->pointers[i] = n->pointers[j];
 			neighbor->num_keys++;
 		}
-		neighbor->pointers[order - 1] = n->pointers[order - 1];
+		neighbor->pointers[(*db)->order - 1] = n->pointers[(*db)->order - 1];
 	}
 
-	root = delete_entry(root, n->parent, k_prime, n);
+	(*db)->root = delete_entry(db, n->parent, k_prime, n);
 	free(n->keys);
 	free(n->pointers);
 	free(n); 
-	return root;
+	return (*db)->root;
 }
 
 
@@ -1246,7 +1274,7 @@ static node_t *coalesce_nodes(node_t * root, node_t * n, node_t * neighbor, int 
  * small node's entries without exceeding the
  * maximum
  */
-static node_t *redistribute_nodes(node_t *root, node_t *n, node_t *neighbor, int neighbor_index, int k_prime_index, int k_prime) {  
+static node_t *redistribute_nodes(db_t **db, node_t *n, node_t *neighbor, int neighbor_index, int k_prime_index, int k_prime) {  
 	int i;
 	node_t *tmp;
 
@@ -1309,7 +1337,7 @@ static node_t *redistribute_nodes(node_t *root, node_t *n, node_t *neighbor, int
 	n->num_keys++;
 	neighbor->num_keys--;
 
-	return root;
+	return (*db)->root;
 }
 
 /* Deletes an entry from the B+ tree.
@@ -1317,23 +1345,23 @@ static node_t *redistribute_nodes(node_t *root, node_t *n, node_t *neighbor, int
  * from the leaf, and then makes all appropriate
  * changes to preserve the B+ tree properties.
  */
-node_t *delete_entry( node_t * root, node_t * n, int key, void * pointer ) {
+node_t *delete_entry(db_t **db, node_t *n, int key, void *pointer) {
 	int min_keys;
-	node_t * neighbor;
+	node_t *neighbor;
 	int neighbor_index;
 	int k_prime_index, k_prime;
 	int capacity;
 
-	// Remove key and pointer from node.
-
-	n = remove_entry_from_node(n, key, pointer);
-
-	/* Case:  deletion from the root. 
+	/*
+	 * Remove key and pointer from node.
 	 */
+	n = remove_entry_from_node(db, n, key, pointer);
 
-	if (n == root) 
-		return adjust_root(root);
-
+	/*
+	 * Case:  deletion from the root. 
+	 */
+	if (n == (*db)->root) 
+		return adjust_root(db);
 
 	/* Case:  deletion from a node below the root.
 	 * (Rest of function body.)
@@ -1342,15 +1370,14 @@ node_t *delete_entry( node_t * root, node_t * n, int key, void * pointer ) {
 	/* Determine minimum allowable size of node,
 	 * to be preserved after deletion.
 	 */
-
-	min_keys = n->is_leaf ? cut(order - 1) : cut(order) - 1;
+	min_keys = n->is_leaf ? cut((*db)->order - 1) : cut((*db)->order) - 1;
 
 	/* Case:  node stays at or above minimum.
 	 * (The simple case.)
 	 */
 
 	if (n->num_keys >= min_keys)
-		return root;
+		return (*db)->root;
 
 	/* Case:  node falls below minimum.
 	 * Either coalescence or redistribution
@@ -1369,14 +1396,14 @@ node_t *delete_entry( node_t * root, node_t * n, int key, void * pointer ) {
 	k_prime = n->parent->keys[k_prime_index];
 	neighbor = neighbor_index == -1 ? n->parent->pointers[1] : n->parent->pointers[neighbor_index];
 
-	capacity = n->is_leaf ? order : order - 1;
+	capacity = n->is_leaf ? (*db)->order : (*db)->order - 1;
 
 	/* Coalescence. */
 	if (neighbor->num_keys + n->num_keys < capacity)
-		return coalesce_nodes(root, n, neighbor, neighbor_index, k_prime);
+		return coalesce_nodes(db, n, neighbor, neighbor_index, k_prime);
 
 	/* Redistribution. */
-	return redistribute_nodes(root, n, neighbor, neighbor_index, k_prime_index, k_prime);
+	return redistribute_nodes(db, n, neighbor, neighbor_index, k_prime_index, k_prime);
 }
 
 /* 
@@ -1386,7 +1413,7 @@ void ytree_delete(db_t **db, int key) {
 	record_t *key_record = find((*db)->root, key);
 	node_t *key_leaf = find_leaf((*db)->root, key);
 	if (key_record && key_leaf) {
-		(*db)->root = delete_entry((*db)->root, key_leaf, key, key_record);
+		(*db)->root = delete_entry(db, key_leaf, key, key_record);
 
 		/* Call pointer release hook if type is data */
 		if (is_data(key_record) && release_callback)
@@ -1421,6 +1448,8 @@ void ytree_destroy(db_t **db) {
 		return;
 
 	destroy_tree_nodes((*db)->root);
+
+	(*db)->root = NULL;
 }
 
 /* ********************************
@@ -1428,7 +1457,7 @@ void ytree_destroy(db_t **db) {
  * ********************************/
 
 /* Return schema size depending on page size */
-#define get_schema_size(n) (n)->page_size/64
+#define get_schema_size(n) (n)->page_size/128
 
 /* 
  * Write header to disk
@@ -1438,7 +1467,7 @@ static void env_write_header(env_t *env) {
 	strncpy(buffer.header, DBHEADER, 8);
 
 	buffer.schema = env->schema;
-	buffer.order = env->order;
+	// buffer.order = env->order;
 	buffer.page_size = env->page_size;
 	buffer.flags = env->flags;
 
@@ -1473,6 +1502,7 @@ void ytree_env_init(const char *dbname, env_t **env, uint8_t flags) {
 
 	if (file_exist(dbname)) {
 		puts("open");
+		assert(0);
 
 		// env_read_header(*env);
 		// env_read_schema(*env);
@@ -1485,7 +1515,6 @@ void ytree_env_init(const char *dbname, env_t **env, uint8_t flags) {
 
 		/* Default settings */
 		(*env)->schema = sizeof(env_t);
-		(*env)->order = DEFAULT_ORDER;
 		(*env)->page_size = DEFAULT_PAGE_SIZE;
 		(*env)->flags = flags;
 
@@ -1505,6 +1534,7 @@ void ytree_db_init(short index, db_t **db, env_t **env) {
 
 	(*db)->schema_id = index;
 	(*db)->env = *env;
+	(*db)->order = DEFAULT_ORDER;
 }
 
 void ytree_db_close(db_t **db) {
@@ -1536,13 +1566,14 @@ void print_license_notice() {
 
 /* First message to the user. */
 void print_status(db_t **db) {
-	printf("Current config:\n");
-	printf("  Min order %d\n", MIN_ORDER);
-	printf("  Max order %d\n", MAX_ORDER);
-	printf("  Current order %d\n", order);
+	printf("Database status:\n");
+	printf("  Schema index %d\n", (*db)->schema_id);
+	printf("  Index type B+Tree\n");
+	printf("  Current order %d\n", (*db)->order);
 	printf("  Record type INT\n");
 	printf("  Verbose output %s\n", verbose_output ? "on" : "off");
 	printf("  Tree height %d\n", ytree_height(db));
+	printf("  Tree empty %s\n", (*db)->root == NULL ? "yes" : "no");
 	puts("");
 }
 
@@ -1618,7 +1649,6 @@ int main(int argc, char *argv[]) {
 	env_t *env;
 	db_t *db;
 
-	// node_t *root = NULL;
 	verbose_output = false;
 
 	/* Create new tree object */
@@ -1626,12 +1656,14 @@ int main(int argc, char *argv[]) {
 	ytree_db_init(0, &db, &env);
 
 	if (argc > 1) {
-		order = atoi(argv[1]);
+		int order = atoi(argv[1]);
 		if (order < MIN_ORDER || order > MAX_ORDER) {
 			fprintf(stderr, "Invalid order: %d\n", order);
 			fprintf(stderr, "Value must be between %d and %d\n", MIN_ORDER, MAX_ORDER);
 			exit(EXIT_FAILURE);
 		}
+
+		ytree_order(&db, order);
 	}
 
 	/* Default info to screen */

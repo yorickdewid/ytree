@@ -6,3 +6,6 @@ all: standalone
 
 standalone:
 	$(CC) $(CFLAGS)  -DSTANDALONE  $(SRC) -o $(BIN)
+
+test:
+	$(CC) $(CFLAGS)  -DDEBUG=1 test.c  $(SRC) -o testcase
