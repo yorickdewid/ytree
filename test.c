@@ -59,7 +59,7 @@ TESTCASE(insert) {
 	for (i=0; i<asz(input); ++i)
 		ytree_insert(&db, input[i], ytree_new_int(input[i]));
 
-	test_assert(ytree_count(&db) == 10);
+	test_assert(ytree_count(&db) == asz(input));
 
 	valuepair_t value;
 	value.data = "somval";
@@ -67,19 +67,103 @@ TESTCASE(insert) {
 
 	ytree_insert(&db, -10, ytree_new_record(&value));
 
-	test_assert(ytree_count(&db) == 11);
+	test_assert(ytree_count(&db) == asz(input) + 1);
+	test_assert(!ytree_db_empty(&db));
 
 	ytree_db_close(&db);
 	ytree_env_close(&env);
 }
+
+TESTCASE(find) {
+	env_t *env = NULL;
+	db_t *db = NULL;
+	int input[] = {768,-34,214,-456,712,546,-214};
+
+	ytree_env_init(DATABASENAME, &env, 0);
+	ytree_db_init(0, &db, &env);
+
+	int i;
+	for (i=0; i<asz(input); ++i)
+		ytree_insert(&db, input[i], ytree_new_int(input[i]));
+
+	test_assert(ytree_count(&db) == asz(input));
+
+	for (i=0; i<asz(input); ++i) {
+		record_t *record = ytree_find(&db, input[i]);
+		test_assert(record);
+		test_assert(record->value._int == input[i]);
+	}
+
+	ytree_db_close(&db);
+	ytree_env_close(&env);
+}
+
+TESTCASE(delete) {
+	env_t *env = NULL;
+	db_t *db = NULL;
+	int input[] = {-34,-546,235,13,-421,234,91,-6,35,9232,-164,905};
+
+	ytree_env_init(DATABASENAME, &env, 0);
+	ytree_db_init(0, &db, &env);
+
+	int i;
+	for (i=0; i<asz(input); ++i)
+		ytree_insert(&db, input[i], ytree_new_int(input[i]));
+
+	test_assert(ytree_count(&db) == asz(input));
+
+	ytree_delete(&db, input[0]);
+
+	test_assert(ytree_count(&db) == asz(input) - 1);
+
+	for (i=1; i<asz(input); ++i)
+		ytree_delete(&db, input[i]);
+
+	test_assert(ytree_count(&db) == 0);
+	test_assert(ytree_db_empty(&db));
+
+	ytree_db_close(&db);
+	ytree_env_close(&env);
+}
+
+TESTCASE(purge) {
+	env_t *env = NULL;
+	db_t *db = NULL;
+	int input[] = {
+		6152,-8573,-6162,-5755,-6495,5973,-3874
+		-5867,-5692,-4740,9484,7054,3273,3331,
+		9642,-8831,1444,716,453,7280,7971
+	};
+
+	ytree_env_init(DATABASENAME, &env, 0);
+	ytree_db_init(0, &db, &env);
+
+	int i;
+	for (i=0; i<asz(input); ++i)
+		ytree_insert(&db, input[i], ytree_new_int(input[i]));
+
+	test_assert(ytree_count(&db) == asz(input));
+
+	ytree_purge(&db);
+
+	test_assert(ytree_count(&db) == 0);
+	test_assert(ytree_db_empty(&db));
+
+	ytree_db_close(&db);
+	ytree_env_close(&env);
+}
+
 
 int main(int agrc, char *argv[]) {
 
 	/* Run testcases */
 	CALLTEST(create);
 	CALLTEST(insert);
+	CALLTEST(find);
+	CALLTEST(delete);
+	CALLTEST(purge);
 
-	printf("All tests OK\nReport:\n  Asserts:\t%d\n  Cases:\t%d\n", assertions, cases);
+	printf("All tests OK\nReport:\n  Cases:\t%d\n  Assertions:\t%d\n", cases, assertions);
 
 	return 0;
 }
