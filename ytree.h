@@ -117,6 +117,7 @@ typedef struct {
  */
 typedef struct node {
 	void **pointers;						// Array of pointers to records
+	uint32_t *_pointers;						// Array of pointers to offset
 	int *keys;								// Array of keys with size: order 
 	struct node *parent;					// Parent node or NULL for root
 	bool is_leaf;							// Internal node or leaf
@@ -187,6 +188,7 @@ void ytree_db_close(db_t **db);
 /* Record */
 record_t *make_record(enum datatype type, char c_value, int i_value, float f_value, void *p_value, size_t vsize);
 record_t *ytree_new_record(valuepair_t *pair);
+int ytree_record_size(record_t *record);
 
 /* Helper macros */
 #define ytree_new_char(c) make_record(DT_CHAR, c, 0, 0, NULL, 0)
