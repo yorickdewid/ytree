@@ -138,24 +138,30 @@ static int path_to_root(node_t *root, node_t *child);
 static node_t *find_leaf(node_t *root, int key);
 
 /* Search */
+static record_t *ytree_get(db_t **db, int key);// pub
 static int find_range(db_t **db, int key_start, int key_end, int *returned_keys, void *returned_pointers[]); 
 
 /* Insertion */
 static node_t *make_node_raw(db_t **db, bool is_leaf);
 static int get_left_index(node_t *parent, node_t *left);
-static node_t *insert_into_leaf(node_t *leaf, int key, record_t *pointer );
-static node_t *insert_into_leaf_after_splitting(db_t **db, node_t *leaf, int key, record_t *pointer);
-static node_t *insert_into_node(db_t **db, node_t *parent, int left_index, int key, node_t * right);
-static node_t *insert_into_node_after_splitting(db_t **db, node_t * parent, int left_index, int key, node_t * right);
-static node_t *insert_into_parent(db_t **db, node_t * left, int key, node_t * right);
-static node_t *insert_into_new_root(db_t **db, node_t * left, int key, node_t * right);
-static node_t *start_new_tree(db_t **db, int key, record_t * pointer);
+static void insert_into_leaf(node_t *leaf, int key, uint32_t offset);
+static void insert_into_leaf_after_splitting(db_t **db, node_t *leaf, int key, uint32_t offset);
+static void insert_into_node(db_t **db, node_t *parent, int left_index, int key, node_t * right);
+static void insert_into_node_after_splitting(db_t **db, node_t * parent, int left_index, int key, node_t * right);
+static void insert_into_parent(db_t **db, node_t * left, int key, node_t * right);
+static void insert_into_new_root(db_t **db, node_t * left, int key, node_t * right);
+static void start_new_tree(db_t **db, int key, uint32_t offset);
 
 /* Deletion */
 static node_t *adjust_root(db_t **db);
 static node_t *coalesce_nodes(db_t **db, node_t *n, node_t *neighbor, int neighbor_index, int k_prime);
 static node_t *redistribute_nodes(db_t **db, node_t *n, node_t *neighbor, int neighbor_index, int k_prime_index, int k_prime);
 static node_t *delete_entry(db_t **db, node_t *n, int key, void *pointer);
+
+uint32_t db_write_record(db_t **db, record_t *record);
+record_t *db_read_record(db_t **db, uint32_t offset);
+
+static uint32_t find_value(db_t **db, int key);
 
 /* ********************************
  * HELPERS
@@ -330,7 +336,7 @@ void ytree_print_tree(db_t **db) {
  * appropriate message to stdout.
  */
 void find_and_print(db_t **db, int key, bool verbose) {
-	record_t *record = ytree_find(db, key);
+	record_t *record = ytree_get(db, key);
 	if (!record) {
 		printf("Key: %d  Record: NULL\n", key);
 		return;
@@ -525,7 +531,7 @@ static node_t *find_leaf(node_t *root, int key) {
 	return c;
 }
 
-/*
+/* TODO: to be removed
  * Finds and returns the record to which
  * a key refers.
  */
@@ -543,6 +549,44 @@ record_t *ytree_find(db_t **db, int key) {
 		return NULL;
 	
 	return (record_t *)c->pointers[i];
+}
+
+/* TODO: rename, read recod
+ * Finds and returns the record to which
+ * a key refers.
+ */
+static uint32_t find_value(db_t **db, int key) {
+	int i = 0;
+	node_t *c = find_leaf((*db)->root, key);
+	if (!c)
+		return 0;
+
+	for (i = 0; i < c->num_keys; ++i)
+		if (c->keys[i] == key)
+			break;
+
+	if (i == c->num_keys) 
+		return 0;
+	
+	return c->_pointers[i];
+}
+
+/*
+ *
+ */
+record_t *ytree_get(db_t **db, int key) {
+	/*
+	 * XXX
+	 */
+	uint32_t offset = find_value(db, key);
+	if (!offset) {
+		return NULL;
+	}
+
+	/*
+	 * Read record from page.
+	 */
+	return db_read_record(db, offset);
 }
 
 /* ********************************
@@ -588,6 +632,22 @@ record_t *ytree_new_record(valuepair_t *pair) {
 	return make_record(DT_DATA, 0, 0, 0, pair->data, pair->size);
 }
 
+/* TODO */
+int ytree_record_size(record_t *record) {
+	switch (record->value_type) {
+		case DT_CHAR:
+			return sizeof(char);
+		case DT_INT:
+			return sizeof(int);
+		case DT_FLOAT:
+			return sizeof(float);
+		case DT_DATA:
+			return record->value_size;
+	}
+
+	return 0;
+}
+
 /*
  * Creates a new general node, which can be adapted
  * to serve as either a leaf or an internal node.
@@ -605,8 +665,15 @@ static node_t *make_node_raw(db_t **db, bool is_leaf) {
 		exit(EXIT_FAILURE);
 	}
 
+	/* TODO remove */
 	new_node->pointers = calloc((*db)->order, sizeof(void *));
-	if (new_node->pointers == NULL) {
+	if (!new_node->pointers) {
+		perror("New node pointers array.");
+		exit(EXIT_FAILURE);
+	}
+
+	new_node->_pointers = calloc((*db)->order, sizeof(uint32_t));
+	if (!new_node->_pointers) {
 		perror("New node pointers array.");
 		exit(EXIT_FAILURE);
 	}
@@ -631,8 +698,7 @@ static node_t *make_node_raw(db_t **db, bool is_leaf) {
  */
 static int get_left_index(node_t *parent, node_t *left) {
 	int left_index = 0;
-	while (left_index <= parent->num_keys && 
-			parent->pointers[left_index] != left)
+	while (left_index <= parent->num_keys && parent->pointers[left_index] != left)
 		left_index++;
 
 	return left_index;
@@ -643,7 +709,7 @@ static int get_left_index(node_t *parent, node_t *left) {
  * key into a leaf.
  * Returns the altered leaf.
  */
-static node_t *insert_into_leaf(node_t *leaf, int key, record_t *pointer) {
+static void insert_into_leaf(node_t *leaf, int key, uint32_t offset) {
 	int i, insertion_point;
 
 	insertion_point = 0;
@@ -653,12 +719,13 @@ static node_t *insert_into_leaf(node_t *leaf, int key, record_t *pointer) {
 	for (i = leaf->num_keys; i > insertion_point; i--) {
 		leaf->keys[i] = leaf->keys[i - 1];
 		leaf->pointers[i] = leaf->pointers[i - 1];
+		leaf->_pointers[i] = leaf->_pointers[i - 1];
 	}
 
 	leaf->keys[insertion_point] = key;
-	leaf->pointers[insertion_point] = pointer;
+	leaf->pointers[insertion_point] = 0;
+	leaf->_pointers[insertion_point] = offset;
 	leaf->num_keys++;
-	return leaf;
 }
 
 /* 
@@ -667,7 +734,7 @@ static node_t *insert_into_leaf(node_t *leaf, int key, record_t *pointer) {
  * the tree's order, causing the leaf to be split
  * in half.
  */
-static node_t *insert_into_leaf_after_splitting(db_t **db, node_t *leaf, int key, record_t *pointer) {
+static void insert_into_leaf_after_splitting(db_t **db, node_t *leaf, int key, uint32_t offset) {
 	node_t *new_leaf = make_leaf(db);
 
 	int *temp_keys = (int *)calloc((*db)->order, sizeof(int));
@@ -676,9 +743,16 @@ static node_t *insert_into_leaf_after_splitting(db_t **db, node_t *leaf, int key
 		exit(EXIT_FAILURE);
 	}
 
+	/* TODO remove */
 	void **temp_pointers = calloc((*db)->order, sizeof(void *));
 	if (!temp_pointers) {
 		perror("Temporary pointers array.");
+		exit(EXIT_FAILURE);
+	}
+
+	uint32_t *temp__pointers = calloc((*db)->order, sizeof(uint32_t));
+	if (!temp__pointers) {
+		perror("Temporary _pointers array.");
 		exit(EXIT_FAILURE);
 	}
 
@@ -692,10 +766,12 @@ static node_t *insert_into_leaf_after_splitting(db_t **db, node_t *leaf, int key
 			j++;
 		temp_keys[j] = leaf->keys[i];
 		temp_pointers[j] = leaf->pointers[i];
+		temp__pointers[j] = leaf->_pointers[i];
 	}
 
 	temp_keys[insertion_index] = key;
-	temp_pointers[insertion_index] = pointer;
+	temp_pointers[insertion_index] = 0;//pointer;
+	temp__pointers[insertion_index] = offset;
 
 	leaf->num_keys = 0;
 
@@ -703,12 +779,14 @@ static node_t *insert_into_leaf_after_splitting(db_t **db, node_t *leaf, int key
 
 	for (i = 0; i < split; i++) {
 		leaf->pointers[i] = temp_pointers[i];
+		leaf->_pointers[i] = temp__pointers[i];
 		leaf->keys[i] = temp_keys[i];
 		leaf->num_keys++;
 	}
 
 	for (i = split, j = 0; i < (*db)->order; i++, j++) {
 		new_leaf->pointers[j] = temp_pointers[i];
+		new_leaf->_pointers[j] = temp__pointers[i];
 		new_leaf->keys[j] = temp_keys[i];
 		new_leaf->num_keys++;
 	}
@@ -716,18 +794,24 @@ static node_t *insert_into_leaf_after_splitting(db_t **db, node_t *leaf, int key
 	free(temp_pointers);
 	free(temp_keys);
 
-	/* Cheate the sequence chain */
+	/* Create the sequence chain */
 	new_leaf->pointers[(*db)->order - 1] = leaf->pointers[(*db)->order - 1];
+	new_leaf->_pointers[(*db)->order - 1] = leaf->_pointers[(*db)->order - 1];
 	leaf->pointers[(*db)->order - 1] = new_leaf;
+	//leaf->pointers_[(*db)->order - 1] = ? TODO
 
-	for (i = leaf->num_keys; i < (*db)->order - 1; i++)
+	for (i = leaf->num_keys; i < (*db)->order - 1; i++) {
 		leaf->pointers[i] = NULL;
-	for (i = new_leaf->num_keys; i < (*db)->order - 1; i++)
+		leaf->_pointers[i] = 0;
+	}
+	for (i = new_leaf->num_keys; i < (*db)->order - 1; i++) {
 		new_leaf->pointers[i] = NULL;
+		new_leaf->_pointers[i] = 0;
+	}
 
 	new_leaf->parent = leaf->parent;
 
-	return insert_into_parent(db, leaf, new_leaf->keys[0], new_leaf);
+	insert_into_parent(db, leaf, new_leaf->keys[0], new_leaf);
 }
 
 /*
@@ -735,17 +819,17 @@ static node_t *insert_into_leaf_after_splitting(db_t **db, node_t *leaf, int key
  * into a node into which these can fit
  * without violating the B+Tree properties.
  */
-static node_t *insert_into_node(db_t **db, node_t *n, int left_index, int key, node_t *right) {
+static void insert_into_node(db_t **db, node_t *n, int left_index, int key, node_t *right) {
 	int i;
 	for (i = n->num_keys; i > left_index; i--) {
 		n->pointers[i + 1] = n->pointers[i];
+		n->_pointers[i + 1] = n->_pointers[i];
 		n->keys[i] = n->keys[i - 1];
 	}
 
 	n->pointers[left_index + 1] = right;
 	n->keys[left_index] = key;
 	n->num_keys++;
-	return (*db)->root;
 }
 
 
@@ -754,7 +838,7 @@ static node_t *insert_into_node(db_t **db, node_t *n, int left_index, int key, n
  * into a node, causing the node's size to exceed
  * the order, and causing the node to split into two.
  */
-static node_t *insert_into_node_after_splitting(db_t **db, node_t *old_node, int left_index, int key, node_t *right) {
+static void insert_into_node_after_splitting(db_t **db, node_t *old_node, int left_index, int key, node_t *right) {
 	node_t *child;
 
 	/*
@@ -772,6 +856,12 @@ static node_t *insert_into_node_after_splitting(db_t **db, node_t *old_node, int
 		exit(EXIT_FAILURE);
 	}
 
+	uint32_t *temp__pointers = calloc(((*db)->order + 1), sizeof(uint32_t));
+	if (!temp__pointers) {
+		perror("Temporary _pointers array.");
+		exit(EXIT_FAILURE);
+	}
+
 	int *temp_keys = calloc((*db)->order, sizeof(int));
 	if (!temp_keys) {
 		perror("Temporary keys array for splitting nodes.");
@@ -782,6 +872,7 @@ static node_t *insert_into_node_after_splitting(db_t **db, node_t *old_node, int
 	for (i = 0, j = 0; i < old_node->num_keys + 1; i++, j++) {
 		if (j == left_index + 1) j++;
 		temp_pointers[j] = old_node->pointers[i];
+		temp__pointers[j] = old_node->_pointers[i];
 	}
 
 	for (i = 0, j = 0; i < old_node->num_keys; i++, j++) {
@@ -802,17 +893,21 @@ static node_t *insert_into_node_after_splitting(db_t **db, node_t *old_node, int
 	old_node->num_keys = 0;
 	for (i = 0; i < split - 1; i++) {
 		old_node->pointers[i] = temp_pointers[i];
+		old_node->_pointers[i] = temp__pointers[i];
 		old_node->keys[i] = temp_keys[i];
 		old_node->num_keys++;
 	}
 	old_node->pointers[i] = temp_pointers[i];
+	old_node->_pointers[i] = temp__pointers[i];
 	int k_prime = temp_keys[split - 1];
 	for (++i, j = 0; i < (*db)->order; i++, j++) {
 		new_node->pointers[j] = temp_pointers[i];
+		new_node->_pointers[j] = temp__pointers[i];
 		new_node->keys[j] = temp_keys[i];
 		new_node->num_keys++;
 	}
 	new_node->pointers[j] = temp_pointers[i];
+	new_node->_pointers[j] = temp__pointers[i];
 	free(temp_pointers);
 	free(temp_keys);
 	new_node->parent = old_node->parent;
@@ -826,19 +921,23 @@ static node_t *insert_into_node_after_splitting(db_t **db, node_t *old_node, int
 	 * nodes resulting from the split, with
 	 * the old node to the left and the new to the right.
 	 */
-	return insert_into_parent(db, old_node, k_prime, new_node);
+	insert_into_parent(db, old_node, k_prime, new_node);
 }
 
 /* 
  * Inserts a new node (leaf or internal node) into the B+Tree.
  * Returns the root of the tree after insertion.
  */
-static node_t *insert_into_parent(db_t **db, node_t *left, int key, node_t *right) {
+static void insert_into_parent(db_t **db, node_t *left, int key, node_t *right) {
 	node_t *parent = left->parent;
 
-	/* Case: new root. */
-	if (!parent)
-		return insert_into_new_root(db, left, key, right);
+	/* 
+	 *Case: new root.
+	 */
+	if (!parent) {
+		insert_into_new_root(db, left, key, right);
+		return;
+	}
 
 	/*
 	 * Case: leaf or node.
@@ -854,14 +953,16 @@ static node_t *insert_into_parent(db_t **db, node_t *left, int key, node_t *righ
 	/*
 	 * Simple case: the new key fits into the node. 
 	 */
-	if (parent->num_keys < (*db)->order - 1)
-		return insert_into_node(db, parent, left_index, key, right);
+	if (parent->num_keys < (*db)->order - 1) {
+		insert_into_node(db, parent, left_index, key, right);
+		return;
+	}
 
 	/* 
 	 * Harder case: split a node in order 
 	 * to preserve the B+ tree properties.
 	 */
-	return insert_into_node_after_splitting(db, parent, left_index, key, right);
+	insert_into_node_after_splitting(db, parent, left_index, key, right);
 }
 
 /* 
@@ -869,7 +970,7 @@ static node_t *insert_into_parent(db_t **db, node_t *left, int key, node_t *righ
  * and inserts the appropriate key into
  * the new root.
  */
-static node_t *insert_into_new_root(db_t **db, node_t *left, int key, node_t *right) {
+static void insert_into_new_root(db_t **db, node_t *left, int key, node_t *right) {
 	node_t *root = make_node(db);
 	root->keys[0] = key;
 	root->pointers[0] = left;
@@ -878,47 +979,54 @@ static node_t *insert_into_new_root(db_t **db, node_t *left, int key, node_t *ri
 	root->parent = NULL;
 	left->parent = root;
 	right->parent = root;
-	return root;
+	(*db)->root = root;
 }
 
 /*
  * First insertion:
  * start a new tree.
  */
-static node_t *start_new_tree(db_t **db, int key, record_t *pointer) {
+static void start_new_tree(db_t **db, int key, uint32_t offset) {
 	node_t *root = make_leaf(db);
 	root->keys[0] = key;
-	root->pointers[0] = pointer;
+	root->pointers[0] = NULL;
 	root->pointers[(*db)->order - 1] = NULL;
+	root->_pointers[0] = offset;
+	root->_pointers[(*db)->order - 1] = 0;
 	root->parent = NULL;
 	root->num_keys++;
-	return root;
+	(*db)->root = root;
 }
 
 /*
  * Master insertion function.
  * Inserts a key and an associated value into
- * the B+ tree, causing the tree to be adjusted
+ * the B+Tree, causing the tree to be adjusted
  * however necessary to maintain the B+ tree
  * properties.
  */
 void ytree_insert(db_t **db, int key, record_t *pointer) {
 	assert(pointer);
 
-	/*
+	/* TODO: check with flags
 	 * The current implementation ignores
 	 * duplicates.
 	 */
-	if (ytree_find(db, key) != NULL) {
+	if (find_value(db, key) != 0) {
 		return;
 	}
+
+	/*
+	 * Write record to page.
+	 */
+	uint32_t offset = db_write_record(db, pointer);
 
 	/*
 	 * Case: the tree does not exist yet.
 	 * Start a new tree.
 	 */
 	if (!(*db)->root) {
-		(*db)->root = start_new_tree(db, key, pointer);
+		start_new_tree(db, key, offset);
 		return;
 	}
 
@@ -929,17 +1037,17 @@ void ytree_insert(db_t **db, int key, record_t *pointer) {
 	node_t *leaf = find_leaf((*db)->root, key);
 
 	/* 
-	 *Case: leaf has room for key and pointer.
+	 *Case: leaf has room for key and offset.
 	 */
 	if (leaf->num_keys < (*db)->order - 1) {
-		leaf = insert_into_leaf(leaf, key, pointer);
+		insert_into_leaf(leaf, key, offset);
 		return;
 	}
 
 	/*
 	 * Case: leaf must be split.
 	 */
-	(*db)->root = insert_into_leaf_after_splitting(db, leaf, key, pointer);
+	insert_into_leaf_after_splitting(db, leaf, key, offset);
 }
 
 /* ********************************
@@ -954,14 +1062,14 @@ void ytree_insert(db_t **db, int key, record_t *pointer) {
  * this special case.
  */
 static int get_neighbor_index(node_t *n) {
-	int i;
-
 	/* Return the index of the key to the left
 	 * of the pointer in the parent pointing
 	 * to n.  
 	 * If n is the leftmost child, this means
 	 * return -1.
 	 */
+
+	int i;
 	for (i = 0; i <= n->parent->num_keys; ++i)
 		if (n->parent->pointers[i] == n)
 			return i - 1;
@@ -973,10 +1081,8 @@ static int get_neighbor_index(node_t *n) {
 }
 
 static node_t *remove_entry_from_node(db_t **db, node_t *n, int key, node_t *pointer) {
-	int i, num_pointers;
-
 	/* Remove the key and shift other keys accordingly. */
-	i = 0;
+	int i = 0;
 	while (n->keys[i] != key)
 		i++;
 	for (++i; i < n->num_keys; i++)
@@ -984,7 +1090,7 @@ static node_t *remove_entry_from_node(db_t **db, node_t *n, int key, node_t *poi
 
 	// Remove the pointer and shift other pointers accordingly.
 	// First determine number of pointers.
-	num_pointers = n->is_leaf ? n->num_keys : n->num_keys + 1;
+	int num_pointers = n->is_leaf ? n->num_keys : n->num_keys + 1;
 	i = 0;
 	while (n->pointers[i] != pointer)
 		i++;
@@ -1178,10 +1284,12 @@ static node_t *redistribute_nodes(db_t **db, node_t *n, node_t *neighbor, int ne
 			tmp->parent = n;
 			n->parent->keys[k_prime_index] = neighbor->keys[0];
 		}
+
 		for (i = 0; i < neighbor->num_keys - 1; i++) {
 			neighbor->keys[i] = neighbor->keys[i + 1];
 			neighbor->pointers[i] = neighbor->pointers[i + 1];
 		}
+
 		if (!n->is_leaf)
 			neighbor->pointers[i] = neighbor->pointers[i + 1];
 	}
@@ -1312,6 +1420,50 @@ void ytree_purge(db_t **db) {
  * DATABASE OPERATIONS
  * ********************************/
 
+/* TODO: free record
+*/
+uint32_t db_write_record(db_t **db, record_t *record) {
+	size_t datasz = ytree_record_size(record);
+	
+	uint32_t new_offset = (*db)->env->free_back - sizeof(enum datatype) - datasz;
+
+	printf("size %zu\n", sizeof(enum datatype) + datasz);
+	printf("free_back %u\n", (*db)->env->free_back);
+	printf("free_front %u\n", (*db)->env->free_front);
+	printf("new_offset %u\n", new_offset);
+
+	/* Overflow */
+	if ((*db)->env->free_front >= new_offset) {
+		puts("ouch");
+		return 0;
+	}
+
+	fseek((*db)->env->pdb, new_offset, SEEK_SET);
+	fwrite(&record->value_type, sizeof(enum datatype), 1, (*db)->env->pdb);
+	fwrite(&record->value._int, datasz, 1, (*db)->env->pdb);
+	(*db)->env->free_back = new_offset;
+
+	return new_offset;
+}
+
+/* */
+record_t *db_read_record(db_t **db, uint32_t offset) {
+	if (!offset)
+		return NULL;
+
+	record_t *record = (record_t *)calloc(1, sizeof(record_t));
+	if (!record) {
+		perror("Record creation");
+		exit(EXIT_FAILURE);
+	}
+
+	fseek((*db)->env->pdb, offset, SEEK_SET);
+	fread(&record->value_type, sizeof(enum datatype), 1, (*db)->env->pdb);
+	fread(&record->value._int, sizeof(int), 1, (*db)->env->pdb);
+
+	return record;
+}
+
 /* Return schema size depending on page size */
 #define get_schema_size(n) (n)->page_size/128
 
@@ -1323,7 +1475,6 @@ static void env_write_header(env_t *env) {
 	strncpy(buffer.header, DBHEADER, 8);
 
 	buffer.schema = env->schema;
-	// buffer.order = env->order;
 	buffer.page_size = env->page_size;
 	buffer.flags = env->flags;
 

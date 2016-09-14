@@ -57,6 +57,13 @@
  * ********************************/
 
 /*
+ * Funtion pointer declarations for the
+ * object hooks.
+ */
+typedef void (*hook_release)(void *object);
+typedef void (*hook_serialize)(void *object, size_t *sz, void *out);
+
+/*
  * Datatypes are used to
  * identify record values.
  */
@@ -117,7 +124,7 @@ typedef struct {
  */
 typedef struct node {
 	void **pointers;						// Array of pointers to records
-	uint32_t *_pointers;						// Array of pointers to offset
+	uint32_t *_pointers;					// Array of pointers to offset
 	int *keys;								// Array of keys with size: order 
 	struct node *parent;					// Parent node or NULL for root
 	bool is_leaf;							// Internal node or leaf
@@ -143,7 +150,8 @@ typedef struct {
 	env_t *env;								// Pointer to current environment
 	node_t *root;							// Pointer to root node
 	struct {
-		void (*data_release)(void *);		// Called on record release
+		hook_release object_release;		// Called on record release
+		hook_serialize object_serialize;	// Called on record serialization
 	} hooks;
 } db_t;
 
